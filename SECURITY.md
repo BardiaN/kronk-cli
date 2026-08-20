@@ -60,7 +60,10 @@ Reports are welcome from anyone; there is no bounty.
 ## What the sandbox does and does not cover
 
 `bash` runs under `sandbox-exec` (macOS) or `bwrap` (Linux) where the OS allows it. That denies
-writes outside the project and reads of credential directories. It does **not** block the network
+writes outside the project and reads of key material — `~/.ssh`, `~/.gnupg`, the macOS keychain,
+`~/.netrc`, `~/.npmrc`. Session tokens for CLIs you are already logged in to (`~/.kube`, `~/.aws`,
+`~/.config/argocd`) stay readable so those tools keep working; hide them with `KRONK_SANDBOX_DENY`
+if your threat model calls for it. It does **not** block the network
 or reads elsewhere, because the agent has to be able to run builds — so it limits what a bad
 command reaches, rather than making one safe. `bwrap` needs unprivileged user namespaces; where
 those are disabled the banner says the shell is unconfined, and `KRONK_SANDBOX=strict` refuses to

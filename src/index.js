@@ -308,6 +308,14 @@ async function oneShot(prompt) {
   ];
   const ac = new AbortController();
   process.on('SIGINT', () => ac.abort());
+
+  // One shot prints no banner, so the mode that auto-approves every command was
+  // also the one that said nothing about what was confining them. On stderr, so
+  // piping the answer somewhere still gets just the answer.
+  if (resolveSandbox() === 'none' && AUTO_YES) {
+    console.error(c.yellow(`  warning: shell commands run unconfined — ${sandbox.reason}`));
+  }
+
   const approve = async (name) => {
     if (AUTO_YES) return true;
     console.log(c.yellow(`  ✗ ${name} needs approval; re-run with --yes to allow it`));

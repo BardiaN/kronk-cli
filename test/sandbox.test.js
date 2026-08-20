@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, realpathSync, exist
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { seatbeltProfile, bwrapArgs, detectBackend, sandboxArgv, onPath } from '../src/sandbox.js';
+import { seatbeltProfile, bwrapArgs, detectBackend, sandboxArgv, onPath, extraPaths } from '../src/sandbox.js';
 import { safe, session, runTool, resolveSandbox, sandbox } from '../src/tools.js';
 
 /**
@@ -84,6 +84,38 @@ test('bwrap rebinds the project read-write inside a read-only home', () => {
   assert.match(a, /--dev-bind \/ \//);
   assert.ok(a.indexOf('--ro-bind /home/x /home/x') < a.indexOf('--bind /home/x/proj /home/x/proj'),
     'the project must be rebound after the home is made read-only, or it wins');
+});
+
+test('a logged-in CLI can still read its own session token', () => {
+  // The deny-list used to cover ~/.kube, ~/.aws and ~/.config/gh, which broke
+  // kubectl and gh outright while missing argocd. Only pivot-grade material is
+  // denied by default now.
+  const p = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t' });
+  for (const readable of ['/h/.kube', '/h/.aws', '/h/.config/gh', '/h/.config/argocd', '/h/.docker']) {
+    assert.ok(!p.includes(`(subpath "${readable}")`), `${readable} should stay readable`);
+  }
+  for (const denied of ['/h/.ssh', '/h/.gnupg', '/h/Library/Keychains']) {
+    assert.ok(p.includes(`(subpath "${denied}")`), `${denied} should be denied`);
+  }
+});
+
+test('KRONK_SANDBOX_DENY hides more, KRONK_SANDBOX_ALLOW lifts a default denial', () => {
+  const denied = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t', deny: ['/h/.kube'] });
+  assert.ok(denied.includes('(subpath "/h/.kube")'), 'DENY should add a path');
+
+  // Without this there is no way to run a keychain-backed CLI short of
+  // disabling the sandbox entirely.
+  const allowed = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t', allow: ['/h/Library/Keychains'] });
+  const readDenies = allowed.split('\n').find((l) => l.startsWith('(deny file-read*'));
+  assert.ok(!readDenies.includes('/h/Library/Keychains'), 'ALLOW should lift the denial');
+  assert.ok(allowed.includes('(allow file-write*') && allowed.includes('/h/Library/Keychains'),
+    'ALLOW should also make it writable');
+});
+
+test('extraPaths accepts colon or comma lists and expands ~', () => {
+  assert.deepEqual(extraPaths('~/.kube:/etc/x', '/h'), ['/h/.kube', '/etc/x']);
+  assert.deepEqual(extraPaths('a,,b', '/h'), ['a', 'b']);
+  assert.deepEqual(extraPaths(undefined, '/h'), []);
 });
 
 test('KRONK_SANDBOX=off turns confinement off and nothing else does', () => {

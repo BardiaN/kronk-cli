@@ -36,12 +36,17 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
+          # npm's own trusted-publishing example disables this; the cache step
+          # writes an .npmrc that can shadow the OIDC credential.
+          package-manager-cache: false
       - run: npm ci
       # Trusted publishing: npm mints a short-lived credential from the OIDC
       # token above, so there is no NPM_TOKEN in this repository at all. The
       # publisher is pinned to this repo and this workflow filename on npmjs.com.
-      - run: npm publish --provenance --access public
+      #
+      # No --provenance flag: it is implied by trusted publishing, and passing
+      # it explicitly changes the auth path npm takes.
+      - run: npm publish --access public
 
   github-release:
     needs: verify

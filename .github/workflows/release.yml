@@ -70,9 +70,10 @@ jobs:
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ vars.TAP_REPO }}.git" tap
           cd tap
           v="${VERSION#v}"
+          # Homebrew derives the version from the tag in the URL, so only the
+          # url and its checksum need rewriting.
           sed -i -E "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz\"|" Formula/kronk-cli.rb
           sed -i -E "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/kronk-cli.rb
-          sed -i -E "s|version \".*\"|version \"${v}\"|" Formula/kronk-cli.rb
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -am "kronk-cli ${v}"

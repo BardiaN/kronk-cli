@@ -3,107 +3,54 @@
 Everything here is already written and the placeholders are filled in:
 `BardiaN` / `Bardia Navvabian` / `Apache-2.0`. What is left is the parts that need your accounts.
 
-## 1. The repository
+## Already done
 
 | | |
 |---|---|
-| **You do** | Create `BardiaN/kronk-cli`, public, no README/license (they exist here) |
-| **I need** | The GitHub username and the repo name if it differs |
+| `BardiaN/kronk-cli` | pushed, CI green on Node 20/22/24 × Linux/macOS |
+| `BardiaN/homebrew-tap` | formula in `Formula/`, `brew style` clean, tap CI green |
+| Branch ruleset on `kronk-cli` | PR + 1 approval + Code Owner review + `ci-ok`; owner bypass on |
+| Branch ruleset on `homebrew-tap` | blocks deletion and force-push only — a PR rule would deadlock the release job |
+| `TAP_REPO` variable | `BardiaN/homebrew-tap` |
+| `TAP_DEPLOY_KEY` secret | ed25519 deploy key, write access to the tap **only** |
+
+## The one thing left: NPM_TOKEN
+
+Creating an npm token needs a browser session, so it cannot be scripted.
+
+1. `npm login`
+2. npmjs.com → *Access Tokens* → **Generate New Token → Granular Access Token**
+   - Packages: *Read and write*, scoped to `kronk-cli` once it exists (or all packages for the first publish)
+   - Expiry: whatever you are comfortable rotating
+3. ```bash
+   cd /Users/bardia/Projects/kronk-vs-extension/kronk-cli
+   gh secret set NPM_TOKEN
+   ```
+   Paste when prompted — it never touches your shell history or disk.
+
+If you would rather not publish to npm at all, delete the `npm` job from
+`.github/workflows/release.yml` and Homebrew plus the install script still cover everything.
+
+## Cutting the first release
 
 ```bash
-git init && git add -A && git commit -m "kronk-cli 0.1.0"
-git remote add origin git@github.com:BardiaN/kronk-cli.git
-git push -u origin main
-```
-
-## 2. Reviews and branch protection
-
-Settings the repo owner has to click — a file cannot set these.
-
-*Settings → Rules → Rulesets → New branch ruleset*, target `master`:
-
-- Require a pull request before merging
-- Require approvals: **1**
-- **Require review from Code Owners** — `.github/CODEOWNERS` points at you, so every PR waits for you
-- Require status checks to pass: `check`, `smoke`
-- Block force pushes
-
-Then *Settings → Actions → General → Workflow permissions*: **Read repository contents**, and
-tick *Allow GitHub Actions to create and approve pull requests* only if you want the tap bump to
-open PRs rather than push directly.
-
-## 3. npm publishing
-
-| | |
-|---|---|
-| **You do** | `npm login`, then create an **Automation** token at npmjs.com → Access Tokens |
-| **You do** | Add it as repo secret `NPM_TOKEN` |
-| **I need** | Nothing, once the secret exists |
-
-`kronk-cli` is unclaimed on npm as of 2026-08-20. The release workflow publishes with
-`--provenance`, which requires the package to be public and the workflow to have `id-token: write`
-— both already set.
-
-## 4. Homebrew
-
-Homebrew **core** will not take this: they require a formula to be notable and stable, and they
-reject thin wrappers around npm packages. A **personal tap** is the normal route and installs just
-as cleanly.
-
-| | |
-|---|---|
-| **You do** | Create a second public repo named exactly `BardiaN/homebrew-tap` |
-| **You do** | Copy `packaging/kronk-cli.rb` to `Formula/kronk-cli.rb` in it |
-| **You do** | Create a fine-grained PAT with **Contents: read and write** scoped to *only* that tap repo |
-| **You do** | Add it to `kronk-cli` as secret `TAP_TOKEN`, and add repo variable `TAP_REPO` = `BardiaN/homebrew-tap` |
-| **I need** | Confirmation of the tap repo name |
-
-Users then install with:
-
-```bash
-brew tap BardiaN/tap
-brew install kronk-cli
-```
-
-The release workflow rewrites `url`, `sha256` and `version` in the formula on every tag, so you
-never edit it by hand after the first commit.
-
-## 5. Manual install
-
-Already works with no accounts at all, once the repo is public and has one release:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/BardiaN/kronk-cli/main/packaging/install.sh | bash
-```
-
-Installs to `~/.local/lib/kronk-cli` with a launcher in `~/.local/bin`. Override with
-`KRONK_CLI_PREFIX`, or pin with `KRONK_CLI_VERSION=v0.2.0`.
-
-## 6. Cutting a release
-
-```bash
-npm version minor        # bumps package.json, commits, tags
+npm version 0.1.0 --allow-same-version -m "release %s"
 git push --follow-tags
 ```
 
-The tag triggers `release.yml`, which refuses to publish if the tag and `package.json` disagree,
-then runs npm publish, the GitHub Release, and the tap bump.
+The tag runs `release.yml`: it refuses to publish if the tag and `package.json` disagree, then
+publishes to npm with provenance, creates the GitHub Release, and pushes the formula bump to the
+tap over the deploy key.
+
+## Why a deploy key rather than a PAT
+
+A fine-grained PAT is still an account credential: it lives in your user settings, and its blast
+radius is whatever you scoped it to at creation. The deploy key is attached to `homebrew-tap`
+itself, grants nothing anywhere else, and is revoked from that repository's own settings page —
+*Settings → Deploy keys*. The private half exists only as the `TAP_DEPLOY_KEY` secret; it was
+written to a temp file, uploaded, and shredded.
 
 ---
 
-## Summary
+## Notes on the setup
 
-Decided:
-
-| | |
-|---|---|
-| GitHub | `BardiaN/kronk-cli` |
-| npm | `kronk-cli` (unclaimed as of 2026-08-20) |
-| Tap | `BardiaN/homebrew-tap` → `brew tap BardiaN/tap` |
-| Licence | Apache-2.0, © 2026 Bardia Navvabian |
-
-Left for you: create the two repos, set the branch ruleset, and add three secrets/variables —
-`NPM_TOKEN`, `TAP_DEPLOY_KEY`, `TAP_REPO`.
-
-**Do not paste any token into the chat.** Add them in *Settings → Secrets and variables → Actions*.
-I never need to see them; the workflows read them from the environment.

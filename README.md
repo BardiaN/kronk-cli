@@ -185,6 +185,11 @@ confinement.
 
 On Linux, install bubblewrap to get it: `apt install bubblewrap` / `dnf install bubblewrap`.
 
+> ⚠️ `bwrap` needs unprivileged user namespaces, which several hardened distros and most CI
+> runners disable — GitHub's included. Where they are off, `bwrap` is installed but cannot start,
+> and the banner will say the shell is unconfined. That is why the backend is probed rather than
+> assumed, and why the check is worth reading rather than trusting the presence of the binary.
+
 ---
 
 ## Project awareness

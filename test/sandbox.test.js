@@ -103,6 +103,19 @@ const backend = resolveSandbox();
 const unconfined = backend === 'none';
 const why = { skip: unconfined ? `no sandbox backend here (${sandbox.reason})` : false };
 
+/**
+ * Skipping is the right default — plenty of machines cannot offer a backend, and
+ * failing there would be noise. But a green run that silently proved nothing is
+ * worse than a red one, so CI sets this and the absence of a backend becomes a
+ * failure instead of a shrug.
+ */
+test('a sandbox backend is available where one is required', {
+  skip: process.env.KRONK_SANDBOX_REQUIRED === '1' ? false : 'KRONK_SANDBOX_REQUIRED is not set',
+}, () => {
+  assert.notEqual(backend, 'none',
+    `KRONK_SANDBOX_REQUIRED=1 but the shell would run unconfined: ${sandbox.reason}`);
+});
+
 test('bash cannot write outside the root', why, async () => {
   const root = tmp();
   // Not a temp path — the profile allows those on purpose, so a build can use

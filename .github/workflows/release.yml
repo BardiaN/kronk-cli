@@ -60,20 +60,29 @@ jobs:
     needs: [verify, github-release]
     runs-on: ubuntu-latest
     steps:
-      - name: bump the formula in the tap
+      # A deploy key scoped to the tap alone, rather than a personal token that
+      # would carry rights over every repository the owner can touch.
+      - name: authorise against the tap
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.TAP_DEPLOY_KEY }}
+
+      - name: bump the formula
         env:
-          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
           VERSION: ${{ github.ref_name }}
           SHA: ${{ needs.github-release.outputs.sha256 }}
+          TAP_REPO: ${{ vars.TAP_REPO }}
         run: |
-          # TAP_REPO is set as a repository variable, e.g. "you/homebrew-tap"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ vars.TAP_REPO }}.git" tap
+          set -euo pipefail
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git clone "git@github.com:${TAP_REPO}.git" tap
           cd tap
           v="${VERSION#v}"
           # Homebrew derives the version from the tag in the URL, so only the
           # url and its checksum need rewriting.
           sed -i -E "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz\"|" Formula/kronk-cli.rb
           sed -i -E "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/kronk-cli.rb
+          git diff --quiet && { echo "formula already current"; exit 0; }
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -am "kronk-cli ${v}"

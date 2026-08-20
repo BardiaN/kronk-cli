@@ -103,7 +103,7 @@ Decided:
 | Licence | Apache-2.0, © 2026 Bardia Navvabian |
 
 Left for you: create the two repos, set the branch ruleset, and add three secrets/variables —
-`NPM_TOKEN`, `TAP_TOKEN`, `TAP_REPO`.
+`NPM_TOKEN`, `TAP_DEPLOY_KEY`, `TAP_REPO`.
 
 **Do not paste any token into the chat.** Add them in *Settings → Secrets and variables → Actions*.
 I never need to see them; the workflows read them from the environment.

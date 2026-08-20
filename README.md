@@ -153,8 +153,102 @@ ln -s "$PWD/src/index.js" ~/.local/bin/kronk-cli
 
 ### Scope
 
-The agent roots itself at **the directory you launch it from**. That becomes its sandbox — file
-tools cannot read or write outside it, and `bash` cannot `cd` out of it. `cd` into a project first.
+The agent roots itself at **the directory you launch it from**. `cd` into a project first.
+
+Two separate things keep it there, and they are worth telling apart:
+
+| | Enforced by | Covers |
+|---|---|---|
+| **Path containment** | `kronk-cli` | `read_file`, `write_file`, `list_dir`, `search` — resolved through symlinks, so a link inside the project cannot point out of it |
+| **Shell confinement** | the kernel — `sandbox-exec` on macOS, [`bwrap`](https://github.com/containers/bubblewrap) on Linux | `bash`: writes outside the project are denied, and key material (`~/.ssh`, `~/.gnupg`, `~/.password-store`, the macOS keychain, `~/.netrc`, `~/.npmrc`) is unreadable |
+
+The startup banner says which is in force:
+
+```
+  sandbox  paths + seatbelt
+```
+
+If no backend is available, it says so rather than implying one:
+
+```
+  sandbox  paths only — bwrap not installed, shell commands are unconfined
+```
+
+**What shell confinement does not do.** Reads stay open outside the deny-list, because denying them
+wholesale breaks every compiler and runtime the agent needs. The network is not blocked — the agent
+has to be able to run `npm install`. So it stops a command from *writing* outside your project or
+reading your keys; it does not make a hostile command harmless.
+
+The write half is categorical: both backends start from "nothing is writable" and hand back the
+project, the temp directories and the build caches. The read half is a deny-list, and a deny-list is
+only as good as its entries — which is exactly why it is kept narrow rather than broad. See
+[Authenticated CLIs](#authenticated-clis) for the trade that produced it.
+
+Two more limits worth stating:
+
+- **Symlinks out of the project are refused, even benign ones.** An `npm link`ed package under
+  `node_modules` resolves outside the root, so `read_file` and `write_file` will decline it. Use the
+  real path, which is inside a project the agent was launched in.
+- **Only filesystem operations are constrained.** The macOS profile allows everything else by
+  design, so a command that persuades an *already-running* unsandboxed process to act on its behalf
+  is not covered by it. Confinement limits what a command reaches directly; it is not a substitute
+  for reading the command before approving it.
+
+`KRONK_SANDBOX=strict` refuses to run `bash` at all when no backend is available, which is the
+setting to use if you need the guarantee rather than the best effort. `KRONK_SANDBOX=off` disables
+confinement.
+
+On Linux, install bubblewrap to get it: `apt install bubblewrap` / `dnf install bubblewrap`.
+
+### Authenticated CLIs
+
+**Tools you are already logged in to keep working.** `kubectl`, `argocd`, `aws`, `docker` and the
+like read their session tokens from `~/.kube`, `~/.config/argocd`, `~/.aws` and so on, and those
+stay readable:
+
+```console
+› run lint on all apps, then show me the current kube context
+  1 ⚙ bash: npx nx run-many -t lint
+  ✓ 174 lines
+  2 ⚙ bash: kubectl config current-context
+  ✓ prod
+```
+
+An earlier version of this denied those directories too. It broke `kubectl` and `gh` outright while
+still missing `argocd`, whose token lives in `~/.config/argocd` and which nobody had thought to add
+— a deny-list that blocks the tools you use and misses the ones you forgot costs real work and buys
+little, since an attacker just takes whichever store was not on the list. So the default covers
+material that is pivot-grade and never legitimately read by a build.
+
+**The one exception is the macOS keychain**, which is denied by default. `gh` stores its token
+there, so it will report `Failed to log in` under the sandbox. If you want it:
+
+```bash
+KRONK_SANDBOX_ALLOW=~/Library/Keychains kronk-cli
+```
+
+**Logging in from inside the agent will not work**, by design — `argocd login`, `gh auth login` and
+`kubectl config set-context` all write outside the project. Log in yourself, in your own shell,
+before starting a session. If a tool genuinely must write to its config directory, allow just that:
+
+```bash
+KRONK_SANDBOX_ALLOW=~/.config/argocd kronk-cli
+```
+
+`KRONK_SANDBOX_ALLOW` makes a path fully available — writable, and readable even if it is denied by
+default. `KRONK_SANDBOX_DENY` goes the other way and hides more, if you would rather the agent could
+not read your cluster credentials at all:
+
+```bash
+KRONK_SANDBOX_DENY=~/.kube,~/.aws kronk-cli     # kubectl and aws will now fail
+```
+
+Both take a comma- or colon-separated list, and `~` expands.
+
+> ⚠️ `bwrap` needs unprivileged user namespaces, which several hardened distros and most CI
+> runners disable — GitHub's included. Where they are off, `bwrap` is installed but cannot start,
+> and the banner will say the shell is unconfined. That is why the backend is probed rather than
+> assumed, and why the check is worth reading rather than trusting the presence of the binary.
 
 ---
 
@@ -292,6 +386,9 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
 | `KRONK_TOOL_TIMEOUT` | `900` | Seconds before a shell command is killed |
+| `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
+| `KRONK_SANDBOX_ALLOW` | — | Paths to make fully available inside the sandbox, comma or colon separated |
+| `KRONK_SANDBOX_DENY` | — | Extra paths to hide from `bash`, comma or colon separated |
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
@@ -489,7 +586,8 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `bash` | ✋ | Run a command; shows it first |
 
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
-escape the launch root. `bash` keeps its working directory **between calls**, so a bare `cd`
+escape the launch root — including through a symlink. `bash` additionally runs under an OS
+sandbox where one is available; see [Scope](#scope) for exactly what that covers. `bash` keeps its working directory **between calls**, so a bare `cd`
 sticks the way it would in a real shell.
 
 ---

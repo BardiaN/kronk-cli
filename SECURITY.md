@@ -20,6 +20,7 @@ Independent scanning runs on every pull request and weekly on a schedule:
 | **`npm audit`** | fails the build at moderate severity and above |
 | **zizmor** | audits the workflows for injectable expressions and over-broad tokens |
 | **Egress proof** | the CLI is run inside a network namespace containing only loopback, against a stub server, and must still complete a turn |
+| **Sandbox proof** | `bash` is run under the OS sandbox and must fail to write outside the project or read a planted key; a missing backend fails the job rather than skipping |
 
 The egress job is the one that answers *"does it phone home"*. A second step in that job asserts
 the namespace really was isolated, so a pass cannot be a false negative. Six static tests back it
@@ -55,6 +56,21 @@ Include what you did, what happened, and what you expected.
 
 If you would like credit in the advisory, say so and how you want to be named.
 Reports are welcome from anyone; there is no bounty.
+
+## What the sandbox does and does not cover
+
+`bash` runs under `sandbox-exec` (macOS) or `bwrap` (Linux) where the OS allows it. That denies
+writes outside the project and reads of key material — `~/.ssh`, `~/.gnupg`, the macOS keychain,
+`~/.netrc`, `~/.npmrc`. Session tokens for CLIs you are already logged in to (`~/.kube`, `~/.aws`,
+`~/.config/argocd`) stay readable so those tools keep working; hide them with `KRONK_SANDBOX_DENY`
+if your threat model calls for it. It does **not** block the network
+or reads elsewhere, because the agent has to be able to run builds — so it limits what a bad
+command reaches, rather than making one safe. `bwrap` needs unprivileged user namespaces; where
+those are disabled the banner says the shell is unconfined, and `KRONK_SANDBOX=strict` refuses to
+run it at all.
+
+The file tools are confined separately, in-process, and resolve symlinks before checking
+containment.
 
 ## In scope
 

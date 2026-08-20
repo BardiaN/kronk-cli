@@ -1,8 +1,10 @@
 import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, relative } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { resolve, relative, dirname, basename, isAbsolute } from 'node:path';
+import { realpathSync, mkdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { c } from './ui.js';
 
 const exec = promisify(execFile);
@@ -32,6 +34,30 @@ function real(p) {
 }
 
 /**
+ * Resolve symlinks all the way down, including for a path that does not exist
+ * yet.
+ *
+ * Comparing the textual path against the root let a symlink inside the project
+ * point anywhere: `ln -s /etc/passwd notes` and then `read_file notes` passed
+ * the containment check and read the target. Writes were worse — a symlinked
+ * directory meant `write_file` landed outside the root entirely. So we resolve
+ * the deepest ancestor that exists and re-attach the rest, which is the path the
+ * filesystem will actually use.
+ */
+function realDeep(abs) {
+  const tail = [];
+  let cur = abs;
+  for (;;) {
+    try { return tail.length ? resolve(realpathSync(cur), ...tail) : realpathSync(cur); }
+    catch { /* does not exist yet — walk up */ }
+    const parent = dirname(cur);
+    if (parent === cur) return abs;
+    tail.unshift(basename(cur));
+    cur = parent;
+  }
+}
+
+/**
  * Trim from the MIDDLE, never the end.
  *
  * Build output puts its errors last, so head-only truncation silently dropped
@@ -47,9 +73,11 @@ export const clip = (s) => {
 
 /** Resolve against the session cwd, and keep the agent inside the launch root. */
 export function safe(p) {
-  const abs = resolve(real(session.cwd), p);
+  const abs = realDeep(resolve(real(session.cwd), p));
   const rel = relative(real(session.root), abs);
-  if (rel.startsWith('..')) throw new Error(`refusing to touch path outside ${session.root}: ${p}`);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`refusing to touch path outside ${session.root}: ${p}`);
+  }
   return abs;
 }
 
@@ -124,6 +152,55 @@ function applyCwd(out, mark) {
 const MARK = '__KRONK_CWD__';
 
 /**
+ * What is actually confining `bash`, resolved once and reported in the banner.
+ * `pending` until the first command runs, because the preflight costs a process.
+ */
+export const sandbox = { backend: 'pending', reason: null };
+
+/**
+ * Ask the kernel, do not assume.
+ *
+ * `sandbox-exec` exists on every Mac and `bwrap` may be installed but unusable
+ * — unprivileged user namespaces are off on some distros, and a container often
+ * has neither. A backend that fails to launch would turn every command into a
+ * confusing startup error, so it is tried against `true` once and dropped if it
+ * does not work.
+ */
+export function resolveSandbox({ platform = process.platform, env = process.env } = {}) {
+  if (sandbox.backend !== 'pending') return sandbox.backend;
+
+  const mode = env.KRONK_SANDBOX ?? 'auto';
+  const wanted = detectBackend({ platform, env });
+
+  if (wanted === 'none') {
+    sandbox.backend = 'none';
+    sandbox.reason = mode === 'off'
+      ? 'disabled by KRONK_SANDBOX=off'
+      : platform === 'linux' ? 'bwrap not installed' : 'no sandbox backend on this platform';
+    return sandbox.backend;
+  }
+
+  // With the filesystem read-only inside the sandbox these cannot be created
+  // from within it, and a missing ~/.npm would break `npm install` outright.
+  for (const d of cacheDirs(homedir())) {
+    try { mkdirSync(d, { recursive: true }); } catch { /* not fatal — it just stays unwritable */ }
+  }
+
+  const [bin, argv] = sandboxArgv('exit 0', {
+    backend: wanted, root: session.root, home: homedir(), cwd: session.cwd, tmp: real(tmpdir()),
+  });
+  const probe = spawnSync(bin, argv, { stdio: 'ignore', timeout: 10_000 });
+
+  if (probe.error || probe.status !== 0) {
+    sandbox.backend = 'none';
+    sandbox.reason = `${wanted} failed to start`;
+  } else {
+    sandbox.backend = wanted;
+  }
+  return sandbox.backend;
+}
+
+/**
  * Run a shell command, streaming progress to `onProgress` as it goes.
  *
  * `execFile` buffers silently, so a ten-minute build looked identical to a
@@ -141,7 +218,16 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
     // Appending `printf` naively made every command look successful, so
     // failures never reached the agent at all.
     const script = `${cmd}\n__kronk_st=$?\nprintf '\\n${MARK}%s' "$(pwd)"\nexit $__kronk_st`;
-    const child = spawn('bash', ['-c', script], {
+
+    const backend = resolveSandbox();
+    if (backend === 'none' && (process.env.KRONK_SANDBOX ?? 'auto') === 'strict') {
+      return resolve(`error: refusing to run unconfined — KRONK_SANDBOX=strict and ${sandbox.reason}.`);
+    }
+
+    const [bin, argv] = sandboxArgv(script, {
+      backend, root: session.root, home: homedir(), cwd: session.cwd, tmp: real(tmpdir()),
+    });
+    const child = spawn(bin, argv, {
       cwd: session.cwd,
       env: { ...process.env, TERM: 'dumb', CI: process.env.CI ?? '1' },
       detached: true,
@@ -246,7 +332,9 @@ export async function runTool(name, args, opts = {}) {
       }
 
       case 'search': {
-        const where = args.path ?? '.';
+        // Went straight to ripgrep unchecked, so `search` with an absolute path
+        // read anything on the machine while read_file was busy refusing to.
+        const where = safe(args.path ?? '.');
         try {
           const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', args.pattern, where]);
           return clip(stdout) || '(no matches)';

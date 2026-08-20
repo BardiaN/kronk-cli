@@ -25,6 +25,11 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+        env:
+          # macOS always has sandbox-exec, so a missing backend there is a real
+          # regression and must fail rather than skip. Linux runners forbid the
+          # user namespaces bwrap needs; the sandbox-linux job covers that path.
+          KRONK_SANDBOX_REQUIRED: ${{ runner.os == 'macOS' && '1' || '' }}
 
   smoke:
     # The CLI must start and print help without a Kronk server present.
@@ -43,16 +48,34 @@ jobs:
           grep -q "Cannot reach Kronk" out.txt
       - run: npm pack --dry-run
 
+  sandbox-linux:
+    # GitHub's runners disable unprivileged user namespaces, so bwrap cannot
+    # start and the confinement tests would skip while CI stayed green. Run them
+    # somewhere namespaces are permitted, so the Linux path is proven and not
+    # merely assumed — the same reasoning as the egress proof in security.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: bwrap really denies the writes and reads it claims to
+        run: |
+          docker run --rm --privileged -v "$PWD":/repo -w /repo node:24-bookworm bash -euo pipefail -c '
+            apt-get update -qq && apt-get install -y -qq bubblewrap
+            # A real secret to try to read, so the denial test has something to fail on.
+            mkdir -p /root/.ssh && echo "PRIVATE KEY MATERIAL" > /root/.ssh/id_rsa
+            KRONK_SANDBOX_REQUIRED=1 node --test test/sandbox.test.js
+          '
+
   # A single stable context for branch protection to require. Matrix jobs get
   # names like "check (ubuntu-latest, 20)", which change whenever the matrix
   # does and cannot be pinned in a ruleset.
   ci-ok:
     if: always()
-    needs: [check, smoke]
+    needs: [check, smoke, sandbox-linux]
     runs-on: ubuntu-latest
     steps:
       - name: fail if anything upstream failed
         run: |
           [ "${{ needs.check.result }}" = "success" ] || exit 1
           [ "${{ needs.smoke.result }}" = "success" ] || exit 1
+          [ "${{ needs.sandbox-linux.result }}" = "success" ] || exit 1
           echo "all checks passed"

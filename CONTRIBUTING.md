@@ -63,5 +63,8 @@ Prefer testing pure functions. Protocol code (`src/sse.js`) and text handling
 
 ## Review
 
-Every PR needs an approving review from a maintainer before it can merge. Expect
-questions — they are about the change, not about you.
+`master` takes no direct pushes from anyone, maintainers included. Every change arrives as a pull
+request, needs a passing CI run and an approving review from a code owner, and must be up to date
+with `master` before it merges.
+
+Expect questions — they are about the change, not about you.

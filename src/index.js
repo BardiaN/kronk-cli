@@ -2,7 +2,7 @@
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { readFile } from 'node:fs/promises';
-import { config, DEFAULT_MODEL } from './config.js';
+import { config, DEFAULT_MODEL, warnIfInsecure } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
@@ -322,6 +322,9 @@ async function oneShot(prompt) {
 }
 
 async function main() {
+  // Before anything reaches the network, on every path through the program.
+  warnIfInsecure();
+
   if (SHOW_MODELS) { await showModels(); return; }
   if (SHOW_MCP) { await showMcp(); process.exit(0); }
 

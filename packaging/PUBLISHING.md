@@ -20,7 +20,7 @@ git push -u origin main
 
 Settings the repo owner has to click — a file cannot set these.
 
-*Settings → Rules → Rulesets → New branch ruleset*, target `main`:
+*Settings → Rules → Rulesets → New branch ruleset*, target `master`:
 
 - Require a pull request before merging
 - Require approvals: **1**

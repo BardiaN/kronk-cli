@@ -18,6 +18,14 @@ import { join, delimiter } from 'node:path';
 const CACHE_DIRS = ['.npm', '.cache', '.yarn', '.pnpm-store', 'Library/Caches'];
 
 /**
+ * Absolute cache paths. Exported because with the filesystem read-only these
+ * have to exist *before* the sandbox starts — bwrap cannot create a mountpoint
+ * under a read-only parent, so a machine with no ~/.npm yet could not run
+ * `npm install` at all. The tool layer creates them; this module stays pure.
+ */
+export const cacheDirs = (home) => CACHE_DIRS.map((d) => join(home, d));
+
+/**
  * Key material the agent has no reason to read, and that no build step needs.
  *
  * This list was once wider — it covered `~/.kube`, `~/.aws`, `~/.config/gh` and
@@ -61,7 +69,7 @@ const sb = (p) => `"${p.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 export function seatbeltProfile({ root, home, tmp, allow = [], deny = [] }) {
   const writable = [root, '/dev', '/private/tmp', '/private/var/tmp', '/private/var/folders', '/tmp']
     .concat(tmp ? [tmp] : [])
-    .concat(CACHE_DIRS.map((d) => join(home, d)))
+    .concat(cacheDirs(home))
     .concat(allow);
 
   // ALLOW means "this path is fully available", so it also lifts a default
@@ -80,18 +88,36 @@ export function seatbeltProfile({ root, home, tmp, allow = [], deny = [] }) {
   ].join('\n');
 }
 
-/** bubblewrap equivalent: rebind the project read-write inside a read-only home. */
-export function bwrapArgs({ root, home, cwd, allow = [], deny = [] }) {
-  const args = ['--die-with-parent', '--dev-bind', '/', '/'];
+/**
+ * bubblewrap equivalent: the filesystem read-only, then hand back what has to
+ * be writable.
+ *
+ * This started as `--dev-bind / /` (everything read-write) with `$HOME` made
+ * read-only afterwards, which protected `$HOME` and nothing else — `/etc`,
+ * `/opt`, `/usr/local` and `/var/tmp` all stayed writable. That is the escape
+ * this module exists to prevent, merely relocated. Deny-by-default is the only
+ * shape that matches what the README promises, and it is what seatbelt does on
+ * the other side.
+ */
+export function bwrapArgs({ root, home, cwd, tmp, allow = [], deny = [] }) {
+  // /dev and /proc must be fresh mounts: a read-only bind of the host's would
+  // leave a shell unable to write to its own stdout or read /proc/self.
+  const args = ['--die-with-parent', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc'];
 
-  // Order matters: each bind overrides the ones before it, so home goes
-  // read-only first and the project and caches are handed back afterwards.
-  if (existsSync(home)) args.push('--ro-bind', home, home);
-  args.push('--bind', root, root, '--bind', '/tmp', '/tmp');
+  // The project is bound unconditionally: it is the working directory, it has to
+  // exist, and guarding it on existsSync meant a root that could not be stat-ed
+  // silently produced a read-only project instead of an error.
+  args.push('--bind', root, root);
 
-  for (const d of CACHE_DIRS.map((x) => join(home, x)).concat(allow)) {
-    if (existsSync(d)) args.push('--bind', d, d);
+  const optional = ['/tmp', '/var/tmp']
+    .concat(tmp ? [tmp] : [])
+    .concat(cacheDirs(home))
+    .concat(allow);
+
+  for (const p of optional) {
+    if (existsSync(p)) args.push('--bind', p, p);
   }
+
   // A tmpfs makes a credential directory exist but be empty; /dev/null over a
   // file makes it readable and empty. Both beat a missing path, which tools
   // report as a confusing ENOENT rather than an obvious denial.
@@ -100,9 +126,8 @@ export function bwrapArgs({ root, home, cwd, allow = [], deny = [] }) {
   for (const d of hidden) {
     if (existsSync(d) && statSync(d).isDirectory()) args.push('--tmpfs', d);
   }
-  for (const f of SECRET_FILES) {
-    const p = join(home, f);
-    if (existsSync(p)) args.push('--ro-bind', '/dev/null', p);
+  for (const f of SECRET_FILES.map((x) => join(home, x))) {
+    if (existsSync(f)) args.push('--ro-bind', '/dev/null', f);
   }
 
   return args.concat('--chdir', cwd, 'bash');
@@ -137,7 +162,7 @@ export function sandboxArgv(script, { backend, root, home, cwd, tmp, env = proce
       ['-p', seatbeltProfile({ root, home, tmp, allow, deny }), 'bash', '-c', script]];
   }
   if (backend === 'bwrap') {
-    return ['bwrap', [...bwrapArgs({ root, home, cwd, allow, deny }), '-c', script]];
+    return ['bwrap', [...bwrapArgs({ root, home, cwd, tmp, allow, deny }), '-c', script]];
   }
   return ['bash', ['-c', script]];
 }

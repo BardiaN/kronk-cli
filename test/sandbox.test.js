@@ -79,11 +79,20 @@ test('paths with quotes cannot break out of the profile syntax', () => {
   assert.match(p, /\(subpath "\/a\\"b"\)/);
 });
 
-test('bwrap rebinds the project read-write inside a read-only home', () => {
+test('bwrap denies by default rather than subtracting from a writable root', () => {
   const a = bwrapArgs({ root: '/home/x/proj', home: '/home/x', cwd: '/home/x/proj' }).join(' ');
-  assert.match(a, /--dev-bind \/ \//);
-  assert.ok(a.indexOf('--ro-bind /home/x /home/x') < a.indexOf('--bind /home/x/proj /home/x/proj'),
-    'the project must be rebound after the home is made read-only, or it wins');
+  // `--dev-bind / /` hands over the whole filesystem read-write; making $HOME
+  // read-only afterwards still leaves /etc, /opt and /usr/local writable.
+  assert.ok(!a.includes('--dev-bind / /'), 'the root filesystem must not be bound read-write');
+  assert.ok(a.indexOf('--ro-bind / /') < a.indexOf('--bind /home/x/proj /home/x/proj'),
+    'the project must be rebound after the filesystem is made read-only, or it stays read-only');
+  assert.match(a, /--dev \/dev/);
+  assert.match(a, /--proc \/proc/);
+});
+
+test('bwrap keeps TMPDIR writable when it is not /tmp', () => {
+  const a = bwrapArgs({ root: '/p', home: '/h', cwd: '/p', tmp: '/tmp' }).join(' ');
+  assert.match(a, /--bind \/tmp \/tmp/);
 });
 
 test('a logged-in CLI can still read its own session token', () => {
@@ -149,16 +158,43 @@ test('a sandbox backend is available where one is required', {
 });
 
 test('bash cannot write outside the root', why, async () => {
-  const root = tmp();
-  // Not a temp path — the profile allows those on purpose, so a build can use
-  // TMPDIR. Home is where an escape would actually hurt.
-  const outside = join(homedir(), '.kronk-sandbox-escape-test');
-  await withRoot(root, async () => {
-    await runTool('bash', { cmd: `echo pwned > ${outside}` });
-    const landed = existsSync(outside);
-    if (landed) rmSync(outside, { force: true });
-    assert.equal(landed, false, 'the write escaped the sandbox');
-  });
+  // The root goes under $HOME, not TMPDIR: /tmp is deliberately writable so
+  // builds can use it, so a root inside /tmp makes "just outside the root" a
+  // permitted location and the test proves nothing.
+  const root = realpathSync(mkdtempSync(join(homedir(), '.kronk-root-')));
+  const sibling = realpathSync(mkdtempSync(join(homedir(), '.kronk-outside-')));
+
+  // An earlier version only tried $HOME. On Linux $HOME was the one place that
+  // happened to be protected, while /etc, /opt and /usr/local stayed writable —
+  // so this passed while the shipped claim was false. Any location that is
+  // writable *without* the sandbox has to be blocked *with* it.
+  const candidates = [
+    join(homedir(), '.kronk-sandbox-escape-test'),
+    join(sibling, 'escape.txt'),
+    '/usr/local/.kronk-sandbox-escape-test',
+    '/opt/.kronk-sandbox-escape-test',
+    '/etc/.kronk-sandbox-escape-test',
+  ];
+
+  try {
+    let exercised = 0;
+    for (const outside of candidates) {
+      // Only meaningful where the write would otherwise succeed; asserting that
+      // a root-owned path stayed empty proves file permissions, not a sandbox.
+      try { writeFileSync(outside, 'probe'); rmSync(outside, { force: true }); }
+      catch { continue; }
+      exercised++;
+
+      await withRoot(root, async () => { await runTool('bash', { cmd: `echo pwned > ${outside}` }); });
+      const landed = existsSync(outside);
+      if (landed) rmSync(outside, { force: true });
+      assert.equal(landed, false, `the write escaped the sandbox: ${outside}`);
+    }
+    assert.ok(exercised >= 2, `only ${exercised} escape targets were writable — this proved little`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(sibling, { recursive: true, force: true });
+  }
 });
 
 test('bash cannot read a credential directory', why, async () => {

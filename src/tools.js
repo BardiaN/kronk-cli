@@ -2,9 +2,9 @@ import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, relative, dirname, basename, isAbsolute } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { realpathSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { detectBackend, sandboxArgv } from './sandbox.js';
+import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { c } from './ui.js';
 
 const exec = promisify(execFile);
@@ -178,6 +178,12 @@ export function resolveSandbox({ platform = process.platform, env = process.env 
       ? 'disabled by KRONK_SANDBOX=off'
       : platform === 'linux' ? 'bwrap not installed' : 'no sandbox backend on this platform';
     return sandbox.backend;
+  }
+
+  // With the filesystem read-only inside the sandbox these cannot be created
+  // from within it, and a missing ~/.npm would break `npm install` outright.
+  for (const d of cacheDirs(homedir())) {
+    try { mkdirSync(d, { recursive: true }); } catch { /* not fatal — it just stays unwritable */ }
   }
 
   const [bin, argv] = sandboxArgv('exit 0', {

@@ -179,9 +179,20 @@ wholesale breaks every compiler and runtime the agent needs. The network is not 
 has to be able to run `npm install`. So it stops a command from *writing* outside your project or
 reading your keys; it does not make a hostile command harmless.
 
-The write half is categorical. The read half is a deny-list, and a deny-list is only as good as its
-entries — which is exactly why it is kept narrow rather than broad. See
+The write half is categorical: both backends start from "nothing is writable" and hand back the
+project, the temp directories and the build caches. The read half is a deny-list, and a deny-list is
+only as good as its entries — which is exactly why it is kept narrow rather than broad. See
 [Authenticated CLIs](#authenticated-clis) for the trade that produced it.
+
+Two more limits worth stating:
+
+- **Symlinks out of the project are refused, even benign ones.** An `npm link`ed package under
+  `node_modules` resolves outside the root, so `read_file` and `write_file` will decline it. Use the
+  real path, which is inside a project the agent was launched in.
+- **Only filesystem operations are constrained.** The macOS profile allows everything else by
+  design, so a command that persuades an *already-running* unsandboxed process to act on its behalf
+  is not covered by it. Confinement limits what a command reaches directly; it is not a substitute
+  for reading the command before approving it.
 
 `KRONK_SANDBOX=strict` refuses to run `bash` at all when no backend is available, which is the
 setting to use if you need the guarantee rather than the best effort. `KRONK_SANDBOX=off` disables

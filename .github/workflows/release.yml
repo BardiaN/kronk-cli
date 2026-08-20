@@ -48,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write        # create the release
+      id-token: write        # sign the provenance attestation
+      attestations: write
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
@@ -56,11 +58,32 @@ jobs:
         id: hash
         run: |
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          curl -fsSL "$url" -o src.tar.gz
-          echo "sha256=$(shasum -a 256 src.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          # GitHub generates tag archives on demand and briefly serves a cached
+          # one after a tag moves. Hash twice and require agreement, or the tap
+          # gets pinned to a checksum that no longer matches the download.
+          for attempt in 1 2 3 4 5; do
+            curl -fsSL "$url" -o a.tar.gz; sleep 3
+            curl -fsSL "$url" -o b.tar.gz
+            ha=$(shasum -a 256 a.tar.gz | cut -d' ' -f1)
+            hb=$(shasum -a 256 b.tar.gz | cut -d' ' -f1)
+            [ "$ha" = "$hb" ] && break
+            echo "archive still settling (attempt $attempt)"; sleep 10
+          done
+          [ "$ha" = "$hb" ] || { echo "archive hash never stabilised"; exit 1; }
+          echo "sha256=$ha" >> "$GITHUB_OUTPUT"
+      - name: build the tarball that will be attested
+        run: npm pack
+
+      # A signed statement tying this artifact to this repo, commit and workflow.
+      # `gh attestation verify` checks it without trusting the registry.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "*.tgz"
+
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
+          files: "*.tgz"
 
   homebrew:
     needs: [verify, github-release]
@@ -90,7 +113,11 @@ jobs:
           # url and its checksum need rewriting.
           sed -i -E "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz\"|" Formula/kronk-cli.rb
           sed -i -E "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/kronk-cli.rb
-          git diff --quiet && { echo "formula already current"; exit 0; }
+          if git diff --quiet; then
+            echo "formula unchanged — refusing to call that a successful bump"
+            grep -E 'url |sha256 ' Formula/kronk-cli.rb
+            exit 1
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -am "kronk-cli ${v}"

@@ -9,8 +9,9 @@ Everything here is already written and the placeholders are filled in:
 |---|---|
 | `BardiaN/kronk-cli` | pushed, CI green on Node 20/22/24 × Linux/macOS |
 | `BardiaN/homebrew-tap` | formula in `Formula/`, `brew style` clean, tap CI green |
-| Branch ruleset on `kronk-cli` | PR + 1 approval + Code Owner review + `ci-ok`; owner bypass on |
-| Branch ruleset on `homebrew-tap` | blocks deletion and force-push only — a PR rule would deadlock the release job |
+| Branch ruleset on `kronk-cli` | PR + 1 approval + Code Owner review + 3 status checks. **No bypass — the owner cannot push to master either** |
+| Branch ruleset on `homebrew-tap` | Same, except the release deploy key is the one bypass actor, or the formula bump would deadlock |
+| Security scanning | CodeQL, Scorecard, Dependabot, npm audit, zizmor, and a network-namespace egress proof |
 | `TAP_REPO` variable | `BardiaN/homebrew-tap` |
 | `TAP_DEPLOY_KEY` secret | ed25519 deploy key, write access to the tap **only** |
 
@@ -31,16 +32,33 @@ Creating an npm token needs a browser session, so it cannot be scripted.
 If you would rather not publish to npm at all, delete the `npm` job from
 `.github/workflows/release.yml` and Homebrew plus the install script still cover everything.
 
-## Cutting the first release
+## Cutting a release
+
+`master` rejects direct pushes from everyone, so a version bump goes through a pull request like
+any other change. Tags are not branch refs, so they still push straight up.
 
 ```bash
-npm version 0.1.0 --allow-same-version -m "release %s"
-git push --follow-tags
+git checkout -b release/v0.2.0
+npm version minor --no-git-tag-version     # bumps package.json only, no commit, no tag
+git commit -am "release 0.2.0"
+git push -u origin release/v0.2.0
+gh pr create --fill
 ```
 
-The tag runs `release.yml`: it refuses to publish if the tag and `package.json` disagree, then
-publishes to npm with provenance, creates the GitHub Release, and pushes the formula bump to the
-tap over the deploy key.
+Approve and merge it, then tag the merged commit:
+
+```bash
+git checkout master && git pull
+git tag -a v0.2.0 -m "release 0.2.0"
+git push origin v0.2.0
+```
+
+The tag triggers `release.yml`, which refuses to publish unless the tag matches `package.json`,
+then publishes to npm over trusted publishing, creates the GitHub Release, and pushes the formula
+bump to the tap over the deploy key.
+
+> `npm version 0.2.0` on its own would commit *and* tag on `master`, and the push would be
+> rejected. `--no-git-tag-version` is what keeps it to a file edit.
 
 ## Why a deploy key rather than a PAT
 

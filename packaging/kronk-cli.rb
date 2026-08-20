@@ -1,0 +1,28 @@
+# Homebrew formula for kronk-cli.
+#
+# Lives in a personal tap: copy to Formula/kronk-cli.rb in <you>/homebrew-tap.
+# The release workflow rewrites url, sha256 and version on every tag.
+class KronkCli < Formula
+  desc "Terminal agent for local models served by Kronk"
+  homepage "https://github.com/BardiaN/kronk-cli"
+  url "https://github.com/BardiaN/kronk-cli/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  license "Apache-2.0"
+  version "0.1.0"
+
+  depends_on "node"
+
+  def install
+    # No runtime dependencies, so the sources are the whole program.
+    libexec.install Dir["*"]
+    (bin/"kronk-cli").write <<~SH
+      #!/bin/bash
+      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/src/index.js" "$@"
+    SH
+    chmod 0755, bin/"kronk-cli"
+  end
+
+  test do
+    assert_match "kronk-cli", shell_output("#{bin}/kronk-cli --help")
+  end
+end

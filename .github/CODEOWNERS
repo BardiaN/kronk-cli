@@ -1,0 +1,4 @@
+# Every PR needs a review from the owner before it can merge.
+# Pair this with a branch protection rule on main that requires
+# "Require review from Code Owners".
+* @BardiaN

@@ -1,0 +1,5 @@
+test/
+.github/
+packaging/
+eslint.config.js
+CONTRIBUTING.md

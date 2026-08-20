@@ -1,0 +1,79 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write        # create the GitHub Release
+  id-token: write        # npm provenance
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: tag must match package.json version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$pkg" = "$tag" ] || { echo "package.json is $pkg but tag is $tag"; exit 1; }
+
+  npm:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: compute tarball hash
+        id: hash
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          curl -fsSL "$url" -o src.tar.gz
+          echo "sha256=$(shasum -a 256 src.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
+  homebrew:
+    needs: [verify, github-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: bump the formula in the tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          SHA: ${{ needs.github-release.outputs.sha256 }}
+        run: |
+          # TAP_REPO is set as a repository variable, e.g. "you/homebrew-tap"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ vars.TAP_REPO }}.git" tap
+          cd tap
+          v="${VERSION#v}"
+          sed -i -E "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz\"|" Formula/kronk-cli.rb
+          sed -i -E "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/kronk-cli.rb
+          sed -i -E "s|version \".*\"|version \"${v}\"|" Formula/kronk-cli.rb
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "kronk-cli ${v}"
+          git push

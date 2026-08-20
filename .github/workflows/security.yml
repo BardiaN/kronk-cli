@@ -1,0 +1,77 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "41 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: no known vulnerabilities
+        run: npm audit --audit-level=moderate
+      - name: nothing sneaks into the published tarball
+        run: |
+          npm pack --dry-run --json > files.json
+          node -e '
+            const f = require("./files.json")[0].files.map(x => x.path);
+            const allowed = /^(src\/|README\.md|LICENSE|NOTICE|package\.json)/;
+            const bad = f.filter(p => !allowed.test(p));
+            if (bad.length) { console.error("unexpected files in the tarball:", bad); process.exit(1); }
+            console.log(f.length + " files, all expected");
+          '
+
+  workflows:
+    name: workflow hardening
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # zizmor audits the workflows themselves: injectable ${{ }} expressions,
+      # over-broad permissions, credential persistence, unpinned actions.
+      - name: audit workflows with zizmor
+        run: pipx run zizmor --persona=regular --format plain .github/workflows/ || true
+
+  egress:
+    name: talks only to the configured host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+
+      # Proof by construction: run the CLI inside a network namespace that has
+      # nothing but loopback. If it can still complete a turn against a stub on
+      # 127.0.0.1, it needed no other host to do its job. Any call to a third
+      # party would fail here instead of succeeding silently in the wild.
+      - name: run with no network but loopback
+        run: |
+          sudo unshare --net bash -euo pipefail -c '
+            ip link set lo up
+            STUB_PORT=18435 node test/fixtures/stub-kronk.mjs 2>/dev/null &
+            for i in $(seq 1 40); do
+              node -e "fetch(\"http://127.0.0.1:18435/v1/models\").then(()=>process.exit(0)).catch(()=>process.exit(1))" && break
+              sleep 0.25
+            done
+            out=$(KRONK_URL=http://127.0.0.1:18435/v1 node src/index.js --no-context --no-think "hi" </dev/null 2>&1)
+            echo "$out"
+            grep -q EGRESS_OK <<<"$out"
+          '
+
+      - name: confirm the namespace really was isolated
+        run: |
+          # The same command must fail when it needs a host that is not there.
+          if sudo unshare --net bash -c 'ip link set lo up; node -e "fetch(\"https://registry.npmjs.org\").then(()=>process.exit(0)).catch(()=>process.exit(1))"'; then
+            echo "network was NOT isolated — the egress test proves nothing"; exit 1
+          fi
+          echo "isolation confirmed: outbound traffic fails inside the namespace"

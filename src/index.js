@@ -9,6 +9,7 @@ import { c, banner, fmtContext, statusLine } from './ui.js';
 import { projectContext } from './context.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
+import { resolveSandbox, sandbox } from './tools.js';
 
 // ---- argv -------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -347,8 +348,16 @@ async function main() {
     if (ctx.isGit) bits.push('git');
     if (ctx.agentFile) bits.push(c.green(ctx.agentFile));
     if (config.contextWindow) bits.push(c.grey(`${(config.contextWindow / 1000).toFixed(0)}k ctx`));
-    console.log(c.grey(`  context`) + `  ${bits.join(c.grey(' · '))}\n`);
+    console.log(c.grey(`  context`) + `  ${bits.join(c.grey(' · '))}`);
   }
+
+  // Say which of the two confinements is actually in force. Printing nothing
+  // would let the README's word "sandbox" stand in for a guarantee the kernel
+  // is not making on this machine.
+  const backend = resolveSandbox();
+  console.log(`${c.grey('  sandbox')}  ${backend === 'none'
+    ? c.yellow(`paths only — ${sandbox.reason}, shell commands are unconfined`)
+    : c.grey(`paths + ${backend}`)}\n`);
 
   const messages = [{ role: 'system', content }];
 

@@ -62,8 +62,11 @@ test('the package ships with no runtime dependencies', () => {
 });
 
 test('child processes are only spawned by the tool layer', () => {
+  // Match the import, not the word: a file that only *names* the module in a
+  // comment cannot spawn anything, and a substring match made that a failure.
+  const imports = /from\s+['"](?:node:)?child_process['"]|require\(['"](?:node:)?child_process['"]\)/;
   const spawners = sources
-    .filter(({ body }) => /child_process/.test(body))
+    .filter(({ body }) => imports.test(body))
     .map(({ name }) => name);
   assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'tools.js'].sort(),
     'a new file gained the ability to run commands');

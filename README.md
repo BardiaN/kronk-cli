@@ -153,8 +153,37 @@ ln -s "$PWD/src/index.js" ~/.local/bin/kronk-cli
 
 ### Scope
 
-The agent roots itself at **the directory you launch it from**. That becomes its sandbox — file
-tools cannot read or write outside it, and `bash` cannot `cd` out of it. `cd` into a project first.
+The agent roots itself at **the directory you launch it from**. `cd` into a project first.
+
+Two separate things keep it there, and they are worth telling apart:
+
+| | Enforced by | Covers |
+|---|---|---|
+| **Path containment** | `kronk-cli` | `read_file`, `write_file`, `list_dir`, `search` — resolved through symlinks, so a link inside the project cannot point out of it |
+| **Shell confinement** | the kernel — `sandbox-exec` on macOS, [`bwrap`](https://github.com/containers/bubblewrap) on Linux | `bash`: writes outside the project are denied, and credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, …) are unreadable |
+
+The startup banner says which is in force:
+
+```
+  sandbox  paths + seatbelt
+```
+
+If no backend is available, it says so rather than implying one:
+
+```
+  sandbox  paths only — bwrap not installed, shell commands are unconfined
+```
+
+**What shell confinement does not do.** Reads stay open outside the credential deny-list, because
+denying them wholesale breaks every compiler and runtime the agent needs. The network is not
+blocked — the agent has to be able to run `npm install`. So it stops a command from *writing*
+outside your project or reading your keys; it does not make a hostile command harmless.
+
+`KRONK_SANDBOX=strict` refuses to run `bash` at all when no backend is available, which is the
+setting to use if you need the guarantee rather than the best effort. `KRONK_SANDBOX=off` disables
+confinement.
+
+On Linux, install bubblewrap to get it: `apt install bubblewrap` / `dnf install bubblewrap`.
 
 ---
 
@@ -292,6 +321,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
 | `KRONK_TOOL_TIMEOUT` | `900` | Seconds before a shell command is killed |
+| `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
@@ -489,7 +519,8 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `bash` | ✋ | Run a command; shows it first |
 
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
-escape the launch root. `bash` keeps its working directory **between calls**, so a bare `cd`
+escape the launch root — including through a symlink. `bash` additionally runs under an OS
+sandbox where one is available; see [Scope](#scope) for exactly what that covers. `bash` keeps its working directory **between calls**, so a bare `cd`
 sticks the way it would in a real shell.
 
 ---

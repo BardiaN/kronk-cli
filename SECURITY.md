@@ -30,13 +30,31 @@ to the files that are supposed to have it.
 Actions are pinned to commit SHAs, and workflow tokens are read-only except in the two jobs that
 publish.
 
+## Supported versions
+
+| Version | Supported |
+|---|---|
+| latest release | ✅ |
+| anything older | ❌ — upgrade first, then report |
+
 ## Reporting a vulnerability
 
 Please **do not open a public issue**. Use GitHub's private reporting:
-*Security → Report a vulnerability* on this repository.
+[Security → Report a vulnerability](https://github.com/BardiaN/kronk-cli/security/advisories/new).
 
-Include what you did, what happened, and what you expected. You should get an
-acknowledgement within a few days.
+Include what you did, what happened, and what you expected.
+
+**What to expect**
+
+| | |
+|---|---|
+| Acknowledgement | within 3 working days |
+| Initial assessment | within 7 days |
+| Fix or mitigation for a confirmed high-severity issue | within 30 days |
+| Public disclosure | after a fix ships, or 90 days, whichever comes first |
+
+If you would like credit in the advisory, say so and how you want to be named.
+Reports are welcome from anyone; there is no bounty.
 
 ## In scope
 

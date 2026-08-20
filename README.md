@@ -25,12 +25,64 @@ entirely on your machine. No network, no API key, no per-token cost.
 
 [![ci](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml)
 [![security](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml)
+[![codeql](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BardiaN/kronk-cli/badge)](https://scorecard.dev/viewer/?uri=github.com/BardiaN/kronk-cli)
+[![npm](https://img.shields.io/npm/v/kronk-cli?logo=npm)](https://www.npmjs.com/package/kronk-cli)
 
 **Zero dependencies.** It is `fetch` and `readline` against Kronk's OpenAI-compatible API.
 
 **It talks to your Kronk server and nothing else** — enforced in CI by running the whole thing
-inside a network namespace with only loopback. See [SECURITY.md](SECURITY.md).
+inside a network namespace with only loopback. See [Verifying this build](#verifying-this-build).
+
+---
+
+## Verifying this build
+
+This tool reads your files and runs your commands. You should not have to take anyone's word for
+what it does with them — so every claim here is machine-checkable.
+
+### Check the artifact came from this source
+
+Every release tarball carries a signed attestation binding it to the repository, commit and
+workflow run that produced it:
+
+```bash
+gh attestation verify kronk-cli-*.tgz --repo BardiaN/kronk-cli
+```
+
+npm packages carry the same provenance, shown as a **Provenance** panel on the
+[package page](https://www.npmjs.com/package/kronk-cli), and verifiable locally:
+
+```bash
+npm audit signatures
+```
+
+Both fail if the artifact was built anywhere other than this repository's CI.
+
+### Read the scan results yourself
+
+| | |
+|---|---|
+| [Security tab](https://github.com/BardiaN/kronk-cli/security/code-scanning) | every CodeQL and Scorecard finding, open and closed |
+| [Scorecard report](https://scorecard.dev/viewer/?uri=github.com/BardiaN/kronk-cli) | per-check supply-chain scores, updated weekly |
+| [Actions](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml) | full logs of every scan, including the egress proof |
+
+These are published by GitHub and the OpenSSF, not by this project. Nobody here can edit them.
+
+### Check it does not phone home
+
+The strongest claim, and the easiest to test yourself:
+
+```bash
+# Linux — run it with no network except loopback
+sudo unshare --net bash -c 'ip link set lo up; kronk-cli --models'
+```
+
+CI runs exactly this on every pull request against a stub server, and a second step proves the
+namespace was really isolated so a pass cannot be a false negative.
+
+Or just read `src/` — it is under 1,500 lines with no dependencies, and every network call goes
+through one function in `src/client.js`.
 
 ---
 

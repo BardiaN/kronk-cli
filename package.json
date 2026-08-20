@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test 'test/*.test.js'",
+    "test": "node --test test/*.test.js",
     "lint": "eslint .",
     "check": "npm run lint && npm test"
   },

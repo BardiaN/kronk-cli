@@ -42,3 +42,17 @@ jobs:
           fi
           grep -q "Cannot reach Kronk" out.txt
       - run: npm pack --dry-run
+
+  # A single stable context for branch protection to require. Matrix jobs get
+  # names like "check (ubuntu-latest, 20)", which change whenever the matrix
+  # does and cannot be pinned in a ruleset.
+  ci-ok:
+    if: always()
+    needs: [check, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: fail if anything upstream failed
+        run: |
+          [ "${{ needs.check.result }}" = "success" ] || exit 1
+          [ "${{ needs.smoke.result }}" = "success" ] || exit 1
+          echo "all checks passed"

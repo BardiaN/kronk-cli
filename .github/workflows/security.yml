@@ -1,9 +1,10 @@
 name: security
 
+# Gates pull requests, plus a weekly sweep so a scan still runs when nothing
+# is merged. Dropped the master-push trigger: it re-ran the identical checks on
+# the merge commit minutes after the PR run had already passed them.
 on:
   pull_request:
-  push:
-    branches: [master]
   schedule:
     - cron: "41 6 * * 1"
 

@@ -1,9 +1,11 @@
 name: ci
 
+# Gates pull requests. Nothing here runs on master: the branch is
+# pull-request-only and must be up to date before merging, so the commit that
+# lands is the commit these checks passed on. The release pipeline re-runs lint
+# and tests before it publishes anything.
 on:
   pull_request:
-  push:
-    branches: [master]
 
 permissions:
   contents: read

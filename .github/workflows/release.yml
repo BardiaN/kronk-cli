@@ -1,15 +1,52 @@
 name: release
 
+# Merging to master is the release trigger. A merge only releases when
+# package.json carries a version that has no tag yet, so ordinary merges pass
+# straight through and a version bump is what ships.
+#
+# The tag is created inside this run rather than by a separate workflow: a tag
+# pushed with GITHUB_TOKEN does not start another workflow, so a "tag on merge"
+# job would look green and silently never publish.
 on:
   push:
-    tags: ['v*']
+    branches: [master]
+  workflow_dispatch:        # re-run a release that failed after the tag existed
 
 # Least privilege at the top; each job widens only what it needs.
 permissions:
   contents: read
 
 jobs:
+  gate:
+    name: is this a release?
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+          # Asking the API beats fetching every tag, and makes a re-run
+          # idempotent: once the tag exists this commit is no longer a release.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v$v" >/dev/null 2>&1; then
+            echo "v$v is already tagged — nothing to release"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$v has no tag yet — releasing"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
+    needs: gate
+    if: needs.gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -18,14 +55,26 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - name: tag must match package.json version
+
+  tag:
+    needs: [gate, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the tag this release is named for
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: tag the release commit
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
-          pkg=$(node -p "require('./package.json').version")
-          tag="${GITHUB_REF_NAME#v}"
-          [ "$pkg" = "$tag" ] || { echo "package.json is $pkg but tag is $tag"; exit 1; }
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "kronk-cli ${TAG#v}"
+          git push origin "$TAG"
 
   npm:
-    needs: verify
+    needs: [gate, tag]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,9 +85,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          # npm's own trusted-publishing example disables this; the cache step
-          # writes an .npmrc that can shadow the OIDC credential.
-          package-manager-cache: false
+          # Deliberately no `cache: npm`: the cache step writes an .npmrc that
+          # can shadow the OIDC credential. This used to be expressed as
+          # `package-manager-cache: false`, which setup-node does not accept —
+          # it warned "Unexpected input(s)" on every release and did nothing.
       - run: npm ci
       # Trusted publishing: npm mints a short-lived credential from the OIDC
       # token above, so there is no NPM_TOKEN in this repository at all. The
@@ -49,7 +99,7 @@ jobs:
       - run: npm publish --access public
 
   github-release:
-    needs: verify
+    needs: [gate, tag]
     runs-on: ubuntu-latest
     permissions:
       contents: write        # create the release
@@ -61,8 +111,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: compute tarball hash
         id: hash
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
           # GitHub generates tag archives on demand and briefly serves a cached
           # one after a tag moves. Hash twice and require agreement, or the tap
           # gets pinned to a checksum that no longer matches the download.
@@ -87,11 +139,13 @@ jobs:
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
+          # The run is on a branch, so the tag has to be named explicitly.
+          tag_name: ${{ needs.gate.outputs.tag }}
           generate_release_notes: true
           files: "*.tgz"
 
   homebrew:
-    needs: [verify, github-release]
+    needs: [gate, github-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read         # pushes to the tap over the deploy key, not GITHUB_TOKEN
@@ -105,7 +159,7 @@ jobs:
 
       - name: bump the formula
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.gate.outputs.tag }}
           SHA: ${{ needs.github-release.outputs.sha256 }}
           TAP_REPO: ${{ vars.TAP_REPO }}
         run: |

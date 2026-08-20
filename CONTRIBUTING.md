@@ -25,7 +25,9 @@ kronk server start --detach
 npm run check
 ```
 
-CI runs the same thing on Node 20, 22 and 24, on Linux and macOS. It also checks that the CLI
+CI runs the same thing on Node 20, 22 and 24, on Linux and macOS. The test script uses an
+unquoted glob on purpose: Node 20's `--test` cannot expand glob patterns itself, and Node 24
+mishandles a bare directory, so the shell has to do the expanding. It also checks that the CLI
 starts and fails cleanly with no server running.
 
 ## What gets merged quickly

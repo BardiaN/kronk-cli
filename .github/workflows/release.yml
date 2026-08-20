@@ -4,16 +4,16 @@ on:
   push:
     tags: ['v*']
 
+# Least privilege at the top; each job widens only what it needs.
 permissions:
-  contents: write        # create the GitHub Release
-  id-token: write        # npm provenance
+  contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 24, cache: npm }
       - run: npm ci
       - run: npm run lint
@@ -27,9 +27,12 @@ jobs:
   npm:
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -43,28 +46,32 @@ jobs:
   github-release:
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the release
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: compute tarball hash
         id: hash
         run: |
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
           curl -fsSL "$url" -o src.tar.gz
           echo "sha256=$(shasum -a 256 src.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
 
   homebrew:
     needs: [verify, github-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read         # pushes to the tap over the deploy key, not GITHUB_TOKEN
     steps:
       # A deploy key scoped to the tap alone, rather than a personal token that
       # would carry rights over every repository the owner can touch.
       - name: authorise against the tap
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
           ssh-private-key: ${{ secrets.TAP_DEPLOY_KEY }}
 

@@ -35,6 +35,27 @@ export const config = {
   rcPath: RC,
 };
 
+/**
+ * File contents and command output leave this process in request bodies, which
+ * is the whole job. Over loopback that is fine. Pointed at a remote host over
+ * plain HTTP it is not, so say so once rather than letting it pass silently.
+ */
+export function warnIfInsecure(warn = console.error) {
+  let url;
+  try { url = new URL(config.baseUrl); } catch { return false; }
+
+  const local = ['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(url.hostname)
+    || url.hostname.endsWith('.local')
+    || url.hostname === 'host.docker.internal';
+
+  if (url.protocol === 'https:' || local) return false;
+
+  warn(`  warning: ${config.baseUrl} is remote and unencrypted.`);
+  warn('  File contents and command output will cross the network in clear text.');
+  warn('  Use https, or an SSH tunnel to keep the endpoint on localhost.');
+  return true;
+}
+
 export const headers = () => ({
   'Content-Type': 'application/json',
   Authorization: `Bearer ${config.token}`,

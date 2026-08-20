@@ -23,7 +23,14 @@ entirely on your machine. No network, no API key, no per-token cost.
   2104→812 tok · 61.3 tok/s · ttft 240ms · 1980 cached
 ```
 
+[![ci](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml)
+[![security](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/BardiaN/kronk-cli/badge)](https://scorecard.dev/viewer/?uri=github.com/BardiaN/kronk-cli)
+
 **Zero dependencies.** It is `fetch` and `readline` against Kronk's OpenAI-compatible API.
+
+**It talks to your Kronk server and nothing else** — enforced in CI by running the whole thing
+inside a network namespace with only loopback. See [SECURITY.md](SECURITY.md).
 
 ---
 

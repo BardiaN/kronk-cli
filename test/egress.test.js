@@ -68,3 +68,23 @@ test('child processes are only spawned by the tool layer', () => {
   assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'tools.js'].sort(),
     'a new file gained the ability to run commands');
 });
+
+test('warns when the endpoint is remote and unencrypted', async () => {
+  const { config, warnIfInsecure } = await import('../src/config.js');
+  const seen = [];
+  const capture = (m) => seen.push(m);
+  const original = config.baseUrl;
+
+  for (const url of ['http://localhost:11435/v1', 'http://127.0.0.1:11435/v1', 'https://kronk.example.com/v1']) {
+    config.baseUrl = url;
+    seen.length = 0;
+    assert.equal(warnIfInsecure(capture), false, `${url} should be accepted quietly`);
+  }
+
+  config.baseUrl = 'http://kronk.example.com/v1';
+  seen.length = 0;
+  assert.equal(warnIfInsecure(capture), true, 'remote plain http must warn');
+  assert.match(seen.join(' '), /clear text/);
+
+  config.baseUrl = original;
+});

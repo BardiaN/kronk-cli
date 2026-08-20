@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/BardiaN/kronk-cli/security/advisories/new
+    about: Please report privately, not as a public issue.
+  - name: Kronk itself
+    url: https://github.com/ardanlabs/kronk/issues
+    about: Server, model or inference problems belong upstream.

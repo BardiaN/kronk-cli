@@ -1,0 +1,42 @@
+name: Bug report
+description: Something behaved differently than documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Paste the terminal output, including the status line.
+      render: shell
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: kronk-cli version
+      description: "`kronk-cli --help | head -1`, or the commit you are on"
+    validations: { required: true }
+  - type: input
+    id: model
+    attributes:
+      label: Model and context window
+      description: "Output of `kronk-cli --models`"
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: OS, Node version, Kronk version
+      placeholder: "macOS 15.5 / node v24.13.0 / kronk 1.31.5"
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. cd into a project with…
+        2. run `kronk-cli --auto "…"`
+        3. …

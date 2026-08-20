@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a change before writing it
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that is awkward today?
+    validations: { required: true }
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+    validations: { required: true }
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Does this fit the project's constraints?
+      options:
+        - label: It needs no new runtime dependency
+        - label: It does not weaken the approval prompts or the sandbox root
+        - label: It sends nothing anywhere other than the configured Kronk server

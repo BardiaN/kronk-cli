@@ -1,0 +1,8 @@
+kronk-cli
+Copyright 2026 Bardia Navvabian
+
+Licensed under the Apache License, Version 2.0.
+
+This product is an independent client for Kronk (https://github.com/ardanlabs/kronk).
+It contains no Kronk source code and is not affiliated with, endorsed by, or
+sponsored by Ardan Labs. "Kronk" is used only to describe interoperability.

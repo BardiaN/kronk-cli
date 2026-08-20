@@ -35,9 +35,10 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
+      # Trusted publishing: npm mints a short-lived credential from the OIDC
+      # token above, so there is no NPM_TOKEN in this repository at all. The
+      # publisher is pinned to this repo and this workflow filename on npmjs.com.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     needs: verify

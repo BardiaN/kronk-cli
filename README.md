@@ -50,6 +50,16 @@ workflow run that produced it:
 gh attestation verify kronk-cli-*.tgz --repo BardiaN/kronk-cli
 ```
 
+The same attestation is attached to every release as a file, so it can be checked without
+GitHub's attestations API in the loop — `<tarball>.sigstore.json` for `gh attestation verify`
+and cosign, `<tarball>.intoto.jsonl` for SLSA tooling:
+
+```bash
+gh release download v0.1.3 --repo BardiaN/kronk-cli
+gh attestation verify kronk-cli-0.1.3.tgz --repo BardiaN/kronk-cli \
+  --bundle kronk-cli-0.1.3.tgz.sigstore.json
+```
+
 npm packages carry the same provenance, shown as a **Provenance** panel on the
 [package page](https://www.npmjs.com/package/kronk-cli), and verifiable locally:
 

@@ -133,16 +133,46 @@ jobs:
 
       # A signed statement tying this artifact to this repo, commit and workflow.
       # `gh attestation verify` checks it without trusting the registry.
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+      - id: attest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "*.tgz"
+
+      # That attestation lives only in GitHub's attestations API, which means it
+      # cannot be checked offline, and it is invisible to anyone auditing the
+      # release itself — OpenSSF Scorecard's Signed-Releases check reads the
+      # release's own assets and reported this project as publishing none.
+      #
+      # So ship the same signed statement as files beside the tarball. The
+      # Sigstore bundle is what cosign and `gh attestation verify --bundle`
+      # consume; the DSSE envelope it wraps is the .intoto.jsonl that SLSA
+      # tooling expects. Neither is a second signature — both are the one the
+      # step above produced, written where a downloader can reach them.
+      - name: publish the attestation beside the tarball
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          tgz=$(ls -1 ./*.tgz | head -1)
+          test -s "$BUNDLE"
+          cp "$BUNDLE" "${tgz}.sigstore.json"
+          # One envelope per line. jq streams concatenated objects, so this
+          # stays correct if a future release attests more than one subject.
+          jq -c '.dsseEnvelope' "$BUNDLE" > "${tgz}.intoto.jsonl"
+          # An envelope that is absent or unsigned would upload a file that
+          # proves nothing, which is worse than uploading none at all.
+          test -s "${tgz}.intoto.jsonl"
+          jq -e '.payload and (.signatures | length > 0)' "${tgz}.intoto.jsonl" > /dev/null
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           # The run is on a branch, so the tag has to be named explicitly.
           tag_name: ${{ needs.gate.outputs.tag }}
           generate_release_notes: true
-          files: "*.tgz"
+          files: |
+            *.tgz
+            *.tgz.sigstore.json
+            *.tgz.intoto.jsonl
 
   homebrew:
     needs: [gate, github-release]

@@ -50,6 +50,16 @@ workflow run that produced it:
 gh attestation verify kronk-cli-*.tgz --repo BardiaN/kronk-cli
 ```
 
+The same attestation is attached to every release as a file, so it can be checked without
+GitHub's attestations API in the loop — `<tarball>.sigstore.json` for `gh attestation verify`
+and cosign, `<tarball>.intoto.jsonl` for SLSA tooling:
+
+```bash
+gh release download v0.1.3 --repo BardiaN/kronk-cli
+gh attestation verify kronk-cli-0.1.3.tgz --repo BardiaN/kronk-cli \
+  --bundle kronk-cli-0.1.3.tgz.sigstore.json
+```
+
 npm packages carry the same provenance, shown as a **Provenance** panel on the
 [package page](https://www.npmjs.com/package/kronk-cli), and verifiable locally:
 
@@ -315,6 +325,45 @@ kronk-cli --auto "make the tests pass"      # unattended, runs the whole task
 
 ---
 
+## Startup: the model is loaded before you type
+
+Kronk has no load command. It lists a model in `GET /v1/models` as soon as the
+server starts, but the weights only reach VRAM on the first inference request —
+so on a fresh server the first prompt you type pays a 10–30 s cold load, and
+looks like a hang.
+
+`kronk-cli` pays it at boot instead. It asks Kronk what is resident, and if the
+selected model is not, sends the cheapest completion there is — one token, no
+reasoning — to trigger admission:
+
+```console
+$ kronk-cli
+  loaded   unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT · 11.4s
+
+  ██ kronk-cli  · local agent, no network
+```
+
+A model already in the pool is left alone; nothing is sent. If the selected one
+cannot be admitted — it will not fit next to what is already resident — the
+fallback runs the same order the CLI uses when you name nothing: the configured
+default, then the best id Kronk is serving. Each is tried once, and a failure
+says why:
+
+```console
+$ kronk-cli -m Qwen3.6-27B
+  unsloth/Qwen3.6-27B-Q4_K_M failed to load — 507 /chat/completions — insufficient VRAM
+  loaded   unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT · 2.0s · fallback
+```
+
+If nothing loads, the original pick stands and the first turn reports the real
+error. A warm-up is a convenience, not a gate — it never decides whether the CLI
+starts.
+
+Skip it with `--no-warm` or `KRONK_WARM=false` and the first prompt pays the load,
+as before.
+
+---
+
 ## Command-line options
 
 | Flag | Default | |
@@ -323,6 +372,7 @@ kronk-cli --auto "make the tests pass"      # unattended, runs the whole task
 | `-l`, `--models`, `--list` | — | List the models Kronk is serving, then exit |
 | `--no-context` | off | Skip the startup scan of the working directory |
 | `--no-compact` | off | Never auto-compact; fail when the window fills instead |
+| `--no-warm` | off | Don't preload the model at startup; let the first prompt trigger the load |
 | `--mcp [names]` | off | Attach MCP servers — bare for all, or a comma list |
 | `--mcp-list` | — | Show configured MCP servers and their tools, then exit |
 | `-a`, `--auto` | off | Autonomous: auto-approve tools **and** run until the task is done. Implies `--yes` |
@@ -391,6 +441,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_SANDBOX_DENY` | — | Extra paths to hide from `bash`, comma or colon separated |
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
+| `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
 | `NO_COLOR` | — | Any value disables colour |
@@ -847,7 +898,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 |---|---|
 | `Cannot reach Kronk` | `kronk server start --detach` |
 | `Kronk is running but has no models` | `kronk model pull <id>` |
-| First response takes ~25 s | Cold model load. Keep it warm with `--pool-ttl 1h` on the server |
+| First response takes ~25 s | Cold model load, and you started with `--no-warm`. Drop the flag, or keep the model warm with `--pool-ttl 1h` on the server |
 | Long silence before text | The model is reasoning. `--no-think`, or `/thinking` to watch it |
 | `(model produced no answer)` | Reasoning consumed the whole budget. Raise `KRONK_MAX_TOKENS` or use `--no-think` |
 | `kronk-cli: command not found` after an nvm switch | Re-run `npm link`, or see [Using nvm?](#using-nvm) |

@@ -23,6 +23,9 @@ export const config = {
   maxSteps: Number(process.env.KRONK_MAX_STEPS ?? file.maxSteps ?? Infinity),
   showThinking: (process.env.KRONK_THINKING ?? String(file.showThinking ?? 'true')) !== 'false',
   noThink: (process.env.KRONK_NO_THINK ?? String(file.noThink ?? '')) === '1',
+  // Kronk admits a model on its first inference request, not at server start.
+  // Pay that cold load at boot rather than on the first typed prompt.
+  warm: (process.env.KRONK_WARM ?? String(file.warm ?? 'true')) !== 'false',
   autoCompact: (process.env.KRONK_AUTO_COMPACT ?? String(file.autoCompact ?? 'true')) !== 'false',
   compactAt: Number(process.env.KRONK_COMPACT_AT ?? file.compactAt ?? 0.85),
   // Large tool output is summarized in a throwaway context so the raw text

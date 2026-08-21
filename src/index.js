@@ -341,7 +341,16 @@ async function main() {
   // Without one, stdin IS the prompt, so wait longer before giving up.
   const piped = await readStdin(inline ? 200 : 10_000);
   const oneShotPrompt = inline && piped ? `${inline}\n\n${piped}` : (inline || piped);
-  if (oneShotPrompt) { await oneShot(oneShotPrompt); return; }
+  if (oneShotPrompt) {
+    // stdin has given us everything it is going to. When it is a pipe the
+    // caller never closes — a script, an editor task, a CI step — the read
+    // above stays pending and its handle would keep the process alive long
+    // after the answer was printed. Let go of it before answering.
+    stdin.pause();
+    stdin.unref?.();
+    await oneShot(oneShotPrompt);
+    return;
+  }
 
   const rl = readline.createInterface({ input: stdin, output: stdout, historySize: 500 });
   await boot();

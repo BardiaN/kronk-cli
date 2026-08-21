@@ -113,3 +113,25 @@ export async function* streamChat({ model, messages, tools, signal, maxTokens, n
 
   yield { type: 'done', calls: [...calls.values()], finish };
 }
+
+/**
+ * Load a model into the pool.
+ *
+ * Kronk has no explicit "load" endpoint — admission happens on the first
+ * inference request, so the cheapest possible completion *is* the load
+ * command. A 23 GB MoE takes ~10–25 s off disk. The reply is discarded;
+ * only whether it succeeded matters.
+ */
+export async function warm(id, signal) {
+  const res = await req('/chat/completions', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({
+      model: id,
+      messages: [{ role: 'user', content: 'hi' }],
+      max_completion_tokens: 1,
+      enable_thinking: false,
+    }),
+  });
+  await res.text();
+}

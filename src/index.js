@@ -4,6 +4,7 @@ import { stdin, stdout } from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { config, DEFAULT_MODEL, warnIfInsecure } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
+import { pickDefault, ensureLoaded } from './boot.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
 import { projectContext } from './context.js';
@@ -29,6 +30,7 @@ const SHOW_MODELS = flag('--models', '-l', '--list');
 const SHOW_MCP = flag('--mcp-list');
 const NO_CONTEXT = flag('--no-context');
 if (flag('--no-compact')) config.autoCompact = false;
+if (flag('--no-warm')) config.warm = false;
 
 if (flag('-h', '--help')) {
   console.log(`
@@ -43,6 +45,7 @@ if (flag('-h', '--help')) {
     -l, --models        list the models Kronk is serving, then exit
         --no-context    skip the startup scan of the working directory
         --no-compact    never auto-compact; fail instead when the window fills
+        --no-warm       don't preload the model; let the first prompt trigger it
         --mcp [names]   attach MCP servers; bare for all, or a comma list
         --mcp-list      show configured MCP servers and their tools, then exit
     -m, --model <id>    model to use; substring is enough, /AGENT profiles win
@@ -60,6 +63,7 @@ if (flag('-h', '--help')) {
     KRONK_MAX_TOKENS    output cap per response (default 8192)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
     KRONK_NO_THINK      set to 1 to disable reasoning
+    KRONK_WARM          false to skip the boot-time model preload
     KRONK_AUTO_COMPACT  false to disable automatic compaction
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
 
@@ -96,14 +100,6 @@ let MCP_WANTED = null;
 const stepsArg = opt('--steps');
 if (stepsArg) config.maxSteps = /^(0|off|none|inf|unlimited)$/i.test(stepsArg) ? Infinity : Number(stepsArg);
 
-/** Last resort when neither the flag nor DEFAULT_MODEL is being served. */
-function pickDefault(ids) {
-  const chat = ids.filter((id) => !/embedding|rerank/i.test(id));
-  const agent = chat.filter((id) => id.endsWith('/AGENT'));
-  const pool = agent.length ? agent : chat;
-  return pool.sort((a, b) => b.length - a.length)[0] ?? null;
-}
-
 async function boot() {
   let ids;
   try {
@@ -138,6 +134,8 @@ async function boot() {
     }
   }
   if (!config.model) config.model = pickDefault(ids);
+
+  if (config.warm) await ensureLoaded(ids);
 
   const { configured, native } = await modelLimits(config.model);
   config.contextWindow = configured;

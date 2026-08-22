@@ -513,11 +513,28 @@ models:
   unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT:
     context-window: 131072
     nseq-max: 2
+    chat-template-kwargs:
+      preserve_thinking: true
     sampling-parameters:
-      temperature: 0.6
-      top_k: 20
-      top_p: 0.95
+      max_tokens: 16384
 ```
+
+**Do not set `temperature`, `top_k` or `top_p` here.** Most current GGUFs carry the values
+their authors recommend, Kronk reads them, and an explicit block only overrides the model's own
+advice. This model ships `general.sampling.temp: 1`, `top_k: 20`, `top_p: 0.95`; an earlier
+version of this page recommended `temperature: 0.6`, which quietly fought that. Check what your
+model carries with `kronk model show <id> --local`.
+
+`preserve_thinking` earns its place in an agent profile. The chat template decides per assistant
+message whether to render its `<think>` block, and the decision depends on which user message is
+the most recent real query. During a tool loop that boundary moves, so the same earlier turn
+renders one way now and another way after your next prompt — the prefix changes and the cached
+prompt is thrown away. `preserve_thinking: true` renders those blocks the same way every time, so
+the prefix stays stable and the server keeps the cache.
+
+Measured on Kronk 1.31.8, on a 13.4k-token conversation with the profile above: the first turn prefilled in
+10.9 s with nothing cached, and every following turn reported **13,4xx of 13,4xx tokens cached**
+and answered in 1.6 s.
 
 ---
 

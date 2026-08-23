@@ -23,6 +23,9 @@ entirely on your machine. No network, no API key, no per-token cost.
   2104→812 tok · 61.3 tok/s · ttft 240ms · 1980 cached
 ```
 
+*A real session transcript, kept here to show the UI format. For numbers you can reproduce
+yourself on your own hardware, see [Performance](#performance).*
+
 [![ci](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml)
 [![security](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml)
 [![codeql](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml)
@@ -487,7 +490,58 @@ run (`kronk-cli "prompt"`) prints no banner and prints nothing here either.
 
 ---
 
+## Performance
+
+The transcripts above are real sessions, kept to show what the UI looks like — not a benchmark
+table, and nothing here reproduced them until now. `scripts/bench.mjs` does: a fixed prompt run
+twice for generation speed, a long deterministic filler prompt carried across three turns for
+prompt-cache retention, and — only when the target model is not already resident — a cold-load
+timing using the same request `warm()` sends at boot. It is a dev tool, excluded from the
+published package; run it straight from a checkout:
+
+```bash
+node scripts/bench.mjs               # table
+node scripts/bench.mjs --json        # same numbers, one JSON object, diffable between runs
+node scripts/bench.mjs --skip-cold-load
+```
+
+It talks to whatever `KRONK_URL` / `KRONK_MODEL` you already have configured, so the numbers
+below are specific to one machine — measure your own rather than trusting these across different
+hardware.
+
+Measured 2026-08-23 on an Apple M4 Max, 64 GB RAM (macOS), against
+`unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT`, kronk 1.31.9, llama.cpp b10549 — from
+`node scripts/bench.mjs`:
+
+```
+kronk-bench · model unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT · kronk 1.31.9 · llama.cpp b10549
+
+1. Generation speed
+   run 1: 229 tok · 2.97s · 77.1 tok/s · ttft 133ms
+   run 2: 220 tok · 2.82s · 78 tok/s · ttft 115ms
+
+2. Prompt cache retention (filler prompt: 5491 tok)
+   turn 1: 5518 tok prompt · 5496 tok cached (100%) · 149ms
+   turn 2: 5544 tok prompt · 5511 tok cached (99%) · 185ms
+   turn 3: 5571 tok prompt · 5537 tok cached (99%) · 160ms
+
+3. Cold load
+   skipped — unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT is already resident — a cold load number
+   here would be misleading
+```
+
+That generation speed and cache-retention region matches the transcripts above (60–80 tok/s,
+prompt cache reused above 99% on repeat turns) — this machine's Kronk server is shared with other
+work, so a run under contention lands lower in that range and a quiet run lands higher; that
+variance is expected, which is why the script reports each run rather than a single averaged
+number. The cold-load section only prints a number the one time a run finds the model not
+resident — do not stop or unload a shared server's model just to force that path; skip it, the
+same way this run did.
+
+---
+
 ## Command-line options
+
 
 | Flag | Default | |
 |---|---|---|
@@ -669,7 +723,8 @@ the prefix stays stable and the server keeps the cache.
 
 Measured on Kronk 1.31.8, on a 13.4k-token conversation with the profile above: the first turn prefilled in
 10.9 s with nothing cached, and every following turn reported **13,4xx of 13,4xx tokens cached**
-and answered in 1.6 s.
+and answered in 1.6 s. *A one-off session, not reproducible from this repo as run — see
+[Performance](#performance) for the current, scripted measurement of the same effect.*
 
 **You no longer have to set it.** kronk-cli sends `chat_template_kwargs: {preserve_thinking: true}`
 on every chat request, regardless of what the profile says, so an existing profile that predates
@@ -704,7 +759,8 @@ Three places surface it:
   18471→57 tok · 69.0 tok/s · ttft 397ms · 18260 cached   18k/131k 14% ▓░░░░░░░░░
 ```
 
-Grey under 70%, yellow past 70%, red past 90%.
+Grey under 70%, yellow past 70%, red past 90%. *Also a real transcript — see
+[Performance](#performance) for how to reproduce numbers like these.*
 
 **`/context`**, on demand:
 

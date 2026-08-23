@@ -43,6 +43,19 @@ test('bash surfaces stderr on failure', async () => {
   assert.match(out, /boom/);
 });
 
+test('the result handed to messages is complete, not capped to the display line count', async () => {
+  // Display caps a failed result at 20 lines after the first (see
+  // toolResultLines in src/ui.js). The string this returns is what agent.js
+  // pushes into `messages` verbatim, so it must carry every line the display
+  // cap would otherwise hide, plus the full `stderr:` block.
+  const out = await runBash("for i in $(seq 1 50); do echo \"err $i\" >&2; done; exit 1");
+  assert.match(out, /^error: exit code 1/);
+  assert.match(out, /stderr:/);
+  assert.match(out, /err 1\n/, 'first stderr line survives');
+  assert.match(out, /err 50/, 'last stderr line survives — no 20-line cap leaked in');
+  assert.equal(out.split('\n').length > 22, true, 'the full body is longer than the display cap');
+});
+
 test('bash returns plain output on success', async () => {
   assert.equal((await runBash('echo fine')).trim(), 'fine');
 });

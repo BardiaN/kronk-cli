@@ -105,6 +105,32 @@ export function liveLine() {
   };
 }
 
+/**
+ * Render a failed tool result for the screen: the first line whole (however
+ * long), the rest indented four spaces and capped, so one runaway command
+ * cannot scroll the actionable part — the `stderr:` block — off the top of
+ * the terminal. Pure: `src/agent.js` prints whatever comes back. The model's
+ * own copy in `messages` is never touched; only the screen is bounded.
+ */
+export function toolResultLines(result, { maxLines = 20, maxWidth = 200 } = {}) {
+  const [first, ...rest] = result.split('\n');
+  const lines = [c.red(`  ✗ ${first}`)];
+
+  const shown = rest.slice(0, maxLines);
+  for (const line of shown) {
+    const body = line.length > maxWidth ? `${line.slice(0, maxWidth)}…` : line;
+    lines.push(c.grey(`    ${body}`));
+  }
+
+  const hidden = rest.length - shown.length;
+  if (hidden > 0) {
+    const noun = hidden === 1 ? 'line' : 'lines';
+    lines.push(c.grey(`    …${hidden} more ${noun} (the model received all of it)`));
+  }
+
+  return lines;
+}
+
 /** A one-line spinner that does not fight with streamed output. */
 export function spinner(label) {
   if (!process.stdout.isTTY) return { stop() {} };

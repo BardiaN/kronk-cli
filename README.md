@@ -1146,4 +1146,4 @@ separate release commit bumps the version. Details are in CONTRIBUTING.md.
 
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -1,6 +1,7 @@
 import { streamChat } from './client.js';
 import { TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval } from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
+import { forRequest } from './reasoning.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
@@ -30,9 +31,24 @@ You are running autonomously on a whole task. Finish it before you stop.
 - Before the final reply, re-read the original request and check every item against it.
 - When every item is genuinely done, reply with a short summary of what you changed.`;
 
-/** Compact in place, preserving the caller's array identity. */
-async function compactInto(messages, model, signal) {
-  const res = await compact(messages, { model, signal });
+/**
+ * The reasoning half of an assistant message, or nothing at all.
+ *
+ * A model that emitted no reasoning — `--no-think`, or a non-reasoning model —
+ * must produce exactly the message this agent has always produced, so the key
+ * is absent rather than empty.
+ */
+const thought = (reasoning) => (reasoning ? { reasoning_content: reasoning } : {});
+
+/**
+ * Compact in place, preserving the caller's array identity.
+ *
+ * `auto` is passed through so the summarizer sees the same reasoning-replay
+ * view as the wire request that just overflowed — see `compact` in
+ * src/compact.js.
+ */
+async function compactInto(messages, model, signal, auto) {
+  const res = await compact(messages, { model, signal, auto });
   if (res.failed || res.skipped) { console.log(report(res)); return false; }
   messages.splice(0, messages.length, ...res.messages);
   console.log(report(res));
@@ -58,8 +74,10 @@ function endTurn(messages) {
  * Run one user turn to completion, looping while the model requests tools.
  *
  * `approve(name, args)` returns a boolean; used for mutating tools. `auto` is
- * autonomous mode — the system prompt in force, not `--yes` — and is what
- * decides whether a premature "done" is handed back or accepted.
+ * autonomous mode — the system prompt in force, not `--yes` — and decides
+ * both whether a premature "done" is handed back or accepted, and (via
+ * src/reasoning.js) whether the current task's reasoning defaults to being
+ * replayed on the wire.
  */
 export async function runTurn({
   messages, model, signal, approve, mcp, auto = false, maxSteps = config.maxSteps,
@@ -86,18 +104,29 @@ export async function runTurn({
     }
     let sp = spinner('thinking');
     let text = '';
+    let reasoning = '';
     let calls = [];
     let wroteAnything = false;
     let inReasoning = false;
 
     try {
       for await (const ev of streamChat({
-        model, messages, tools, signal, maxTokens: config.maxTokens, noThink: config.noThink,
+        model,
+        // The history keeps every step's reasoning; only the current task's
+        // share of it goes on the wire. See src/reasoning.js.
+        messages: forRequest(messages, auto),
+        tools,
+        signal,
+        maxTokens: config.maxTokens,
+        noThink: config.noThink,
         // Re-read every step: this has to hold for the tool-loop follow-ups too,
         // and `/think` can flip the answer between one turn and the next.
         preserveThinking: shouldPreserveThinking(),
       })) {
         if (ev.type === 'reasoning') {
+          // Accumulated before the display check: whether the user watches the
+          // model think has nothing to do with whether the model gets it back.
+          reasoning += ev.value;
           if (!config.showThinking) continue;
           if (sp) { sp.stop(); sp = null; }
           if (!inReasoning) { process.stdout.write(c.grey('\n  ┄ thinking ┄\n  ')); inReasoning = true; }
@@ -131,7 +160,7 @@ export async function runTurn({
         // result left to carry one, and inserting a message here would be the
         // rewrite `carryChecklist` exists to avoid. The next round's tool
         // results carry the plan again.
-        if (await compactInto(messages, model, signal)) {
+        if (await compactInto(messages, model, signal, auto)) {
           step -= 1;
           continue;
         }
@@ -152,7 +181,7 @@ export async function runTurn({
       const used = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
       if (used / config.contextWindow >= config.compactAt) {
         console.log(c.yellow(`  context ${Math.round((used / config.contextWindow) * 100)}% full — compacting`));
-        if (!await compactInto(messages, model, signal)) config.autoCompact = false;
+        if (!await compactInto(messages, model, signal, auto)) config.autoCompact = false;
       }
     }
 
@@ -162,9 +191,9 @@ export async function runTurn({
         // Reasoning models sometimes spend the whole budget thinking and emit no
         // answer. Say so rather than returning silence.
         console.log(c.yellow('  (model produced no answer — raise KRONK_MAX_TOKENS or /thinking off)'));
-        messages.push({ role: 'assistant', content: '(no answer produced)' });
+        messages.push({ role: 'assistant', content: '(no answer produced)', ...thought(reasoning) });
       } else {
-        messages.push({ role: 'assistant', content: text });
+        messages.push({ role: 'assistant', content: text, ...thought(reasoning) });
       }
 
       // A plan with open items means it stopped early. Hand the list back and
@@ -183,6 +212,7 @@ export async function runTurn({
     messages.push({
       role: 'assistant',
       content: text,
+      ...thought(reasoning),
       tool_calls: calls.map((t) => ({
         id: t.id, type: 'function',
         function: { name: t.name, arguments: t.args || '{}' },

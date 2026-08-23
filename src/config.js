@@ -14,6 +14,13 @@ const file = fileConfig();
 /** Used when nothing is passed on the command line or in the environment. */
 export const DEFAULT_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT';
 
+// Three states, not a boolean: unset means "no opinion, let src/reasoning.js
+// pick the autonomous-only default"; set means "override it, in either
+// direction". Collapsing unset into `true` or `false` here would make that
+// distinction impossible to recover downstream.
+const fileReplayReasoning = file.replayReasoning === undefined ? undefined : String(file.replayReasoning);
+const replayReasoningRaw = process.env.KRONK_REPLAY_REASONING ?? fileReplayReasoning;
+
 export const config = {
   baseUrl: process.env.KRONK_URL   ?? file.baseUrl ?? 'http://localhost:11435/v1',
   token:   process.env.KRONK_TOKEN ?? file.token   ?? 'kronk',
@@ -29,6 +36,14 @@ export const config = {
   // Pinning them costs the tokens the blocks occupy and saves the re-prefill.
   preserveThinking:
     (process.env.KRONK_PRESERVE_THINKING ?? String(file.preserveThinking ?? 'true')) !== 'false',
+  // Send the current task's own reasoning back with each tool-loop step, so
+  // the model does not re-derive its plan from tool output alone every time.
+  // Earlier turns are dropped at the boundary the template already uses —
+  // src/reasoning.js has the full argument, including why the *default* for
+  // this is computed there from `auto`, not here as a plain boolean.
+  // `undefined` here means "no override": src/reasoning.js decides. `true`
+  // or `false` here forces the answer regardless of autonomous vs. REPL.
+  replayReasoning: replayReasoningRaw === undefined ? undefined : replayReasoningRaw !== 'false',
   // Kronk admits a model on its first inference request, not at server start.
   // Pay that cold load at boot rather than on the first typed prompt.
   warm: (process.env.KRONK_WARM ?? String(file.warm ?? 'true')) !== 'false',

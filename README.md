@@ -932,6 +932,15 @@ previous prompt prefix — watch `cached` climb in the usage line.
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what gets merged quickly. Commits and PR
+titles follow [Conventional Commits](https://www.conventionalcommits.org/), and releases follow
+npm [semver](https://semver.org/) — a feature or fix PR leaves `package.json` alone, and a
+separate release commit bumps the version. Details are in CONTRIBUTING.md.
+
+---
+
 ## License
 
 MIT

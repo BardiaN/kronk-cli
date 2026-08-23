@@ -26,8 +26,10 @@ const SPECS = [
   { names: ['--no-think'], kind: 'flag', key: 'noThink' },
   { names: ['-a', '--auto'], kind: 'flag', key: 'auto' },
   { names: ['-y', '--yes'], kind: 'flag', key: 'yes' },
+  { names: ['--dry-run'], kind: 'flag', key: 'dryRun' },
   { names: ['-m', '--model'], kind: 'value', key: 'model' },
   { names: ['--steps'], kind: 'value', key: 'steps' },
+  { names: ['--context'], kind: 'value', key: 'context' },
   { names: ['--mcp'], kind: 'optional', key: 'mcp' },
 ];
 
@@ -100,8 +102,9 @@ export function parseArgv(argv) {
     error: null,
     help: false, models: false, mcpList: false,
     noContext: false, noCompact: false, noWarm: false, noThink: false,
-    auto: false, yes: false,
+    auto: false, yes: false, dryRun: false,
     model: null,
+    context: null,
     steps: null,
     mcp: false, mcpNames: null,
     words: [],

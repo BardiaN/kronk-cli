@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
 const RC = join(homedir(), '.kronk-cli.json');
+const MODEL_CONFIG = join(homedir(), '.kronk', 'models', 'model_config.yaml');
 
 function fileConfig() {
   try { return JSON.parse(readFileSync(RC, 'utf8')); } catch { return {}; }
@@ -32,6 +33,9 @@ export const config = {
   // never enters the conversation. Set KRONK_DISTILL=false to keep it whole.
   distill: (process.env.KRONK_DISTILL ?? String(file.distill ?? 'true')) !== 'false',
   distillAt: Number(process.env.KRONK_DISTILL_AT ?? file.distillAt ?? 8000),
+  // Kronk's per-model runtime settings. `setup` is the only thing that writes
+  // it; the override exists so tests never go near the real one.
+  modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,
   lastUsed: 0,
   contextWindow: null,   // filled in at boot from Kronk
   nativeContext: null,

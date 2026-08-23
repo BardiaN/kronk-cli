@@ -61,6 +61,26 @@ node --test test/tools.test.js      # one file
 Prefer testing pure functions. Protocol code (`src/sse.js`) and text handling
 (`src/distill.js`) are the parts most worth covering, because they fail in ways that are quiet.
 
+## Commits and releases
+
+Every commit, and the PR title, follows [Conventional
+Commits](https://www.conventionalcommits.org/): `type(scope): summary`, where `type` is one of
+`feat`, `fix`, `docs`, `ci`, `test`, `refactor`, `chore`, `perf`, `build`. Mark a breaking change
+with `!` after the type (`feat!: …`) or a `BREAKING CHANGE:` footer.
+
+Versioning is npm [semver](https://semver.org/), and the release mechanism reads it directly:
+`release.yml`'s `gate` job tags `v<version>` from `package.json` whenever that version has no tag
+yet, and skips otherwise. That makes releasing a two-step flow:
+
+1. A feature or fix PR merges without touching `version` in `package.json`. This is the normal
+   case — most PRs stop here.
+2. A separate release commit bumps `version` and merges on its own. That merge is what trips the
+   `gate` job and cuts the tag, publishes to npm, and creates the GitHub Release.
+
+Don't bump `version` in a feature or fix PR — it will be rejected. If your change is CI- or
+docs-only, its commits use the matching type (`ci:`, `docs:`) and the PR still doesn't touch the
+version.
+
 ## Review
 
 `master` takes no direct pushes from anyone, maintainers included. Every change arrives as a pull

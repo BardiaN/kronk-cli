@@ -10,8 +10,41 @@ on:
 permissions: read-all
 
 jobs:
+  # release.yml triggers on this same push, with no ordering between the two
+  # workflows. Scorecard's Signed-Releases and Packaging checks read the
+  # newest GitHub Release's assets, so a push that ships a release could be
+  # scored before release.yml has published it. This job closes that race —
+  # and only when there is one to close: it is a fast no-op on every trigger
+  # except a push that actually produces a release.
+  #
+  # ossf/scorecard-action's publish API rejects a workflow where the job
+  # calling the action contains any step without `uses:` (see
+  # .github/scripts/wait-for-release.sh for the source reference), so the wait
+  # can't be a step in the `analysis` job below — it has to be a separate job.
+  gate:
+    name: wait for the release this push produces, if any
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # read package.json and tag refs
+      actions: read         # poll release.yml's run status
+    outputs:
+      proceed: ${{ steps.wait.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/wait-for-release.sh
+
   analysis:
     name: OpenSSF Scorecard
+    needs: gate
+    # always(): a failure in `gate` itself (not a release failure — see the
+    # script) should still let this run, the same best-effort fallback the
+    # script uses on its own timeout. Only an explicit `proceed: false` from a
+    # confirmed release failure skips the scan.
+    if: always() && needs.gate.outputs.proceed != 'false'
     runs-on: ubuntu-latest
     permissions:
       security-events: write

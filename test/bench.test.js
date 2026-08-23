@@ -89,7 +89,10 @@ test('renderTable prints a unit on every number, and identifies the run in its h
   });
   const out = renderTable(report);
 
-  assert.match(out, new RegExp(`model ${MODEL.replace(/\//g, '\\/')} · kronk 1\\.31\\.9 · llama\\.cpp b10549`));
+  // A literal substring, so compare it as one. Building a RegExp from an id that
+  // carries `/` and `.` means hand-escaping metacharacters, which is exactly the
+  // kind of half-done escaping static analysis flags — and it buys nothing here.
+  assert.ok(out.includes(`model ${MODEL} · kronk 1.31.9 · llama.cpp b10549`), out);
   assert.match(out, /256 tok · 5s · 51\.2 tok\/s · ttft 130ms/);
   assert.match(out, /filler prompt: 5491 tok/);
   assert.match(out, /5518 tok prompt · 5496 tok cached \(100%\) · 149ms/);
@@ -201,7 +204,7 @@ test('the printed table reflects the scripted usage numbers exactly, timing loos
   try {
     const { stdout } = await bench(stub.url, []);
 
-    assert.match(stdout, new RegExp(`model ${MODEL.replace(/\//g, '\\/')}`));
+    assert.ok(stdout.includes(`model ${MODEL}`), stdout);
     assert.match(stdout, /run 1: 256 tok · [\d.]+s · [\d.]+ tok\/s · ttft \d+ms/);
     assert.match(stdout, /run 2: 249 tok · [\d.]+s · [\d.]+ tok\/s · ttft \d+ms/);
     assert.match(stdout, /filler prompt: 5491 tok/);

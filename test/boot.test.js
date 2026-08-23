@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,9 +23,16 @@ const OTHER = 'stub/Other-Q4/AGENT';
  * `template` is served as the model's chat template, `modelInfoStatus` breaks
  * that route, and `turns` scripts the streamed replies one per request, so a
  * test can drive a real multi-step tool loop instead of a single answer.
+ *
+ * `samplingMetadata` and `samplingParameters` feed the same `/kronk/models/{id}`
+ * response: the model's own GGUF sampling values (strings, as Kronk reports
+ * them) and the effective `sampling-parameters` block after the profile is
+ * applied (numbers). Both default to absent, matching a model that ships no
+ * sampling metadata at all.
  */
 function startStub({
   ids, resident = [], fail = {}, template = null, modelInfoStatus = 200, turns = [],
+  samplingMetadata = null, samplingParameters = null,
 } = {}) {
   const chat = [];
   let turn = 0;
@@ -48,10 +55,14 @@ function startStub({
         return send(res, modelInfoStatus, { error: { message: 'model info unavailable' } });
       }
       return send(res, 200, {
-        model_config: { 'context-window': 4096 },
+        model_config: {
+          'context-window': 4096,
+          ...(samplingParameters ? { 'sampling-parameters': samplingParameters } : {}),
+        },
         metadata: {
           'stub.context_length': '8192',
           ...(template ? { 'tokenizer.chat_template': template } : {}),
+          ...(samplingMetadata ?? {}),
         },
         data: [],
       });
@@ -317,6 +328,138 @@ test('a failed template lookup is inert: the session runs, the field is not gues
   assert.equal(turn.stream, true);
   assert.ok(Array.isArray(turn.messages) && turn.messages.length >= 2, 'body still well formed');
   for (const body of stub.chat) assert.ok(!('chat_template_kwargs' in body));
+});
+
+// ---- sampling override note --------------------------------------------
+//
+// `/kronk/models/{id}` carries both halves in one response: the model's own
+// GGUF sampling metadata (strings) and the effective sampling-parameters a
+// profile may have overridden (numbers). The pure comparison itself is
+// covered directly in test/client.test.js — these drive the whole CLI to
+// prove the boot path wires it up: printed once, under the banner, grey,
+// and only where the banner itself appears.
+
+/**
+ * Drive the CLI's truly interactive path: no inline prompt, stdin already at
+ * EOF. `execFile` (what `cli()` above uses) does not actually honour a
+ * `stdio` override on its own child — its stdin stays an open pipe no matter
+ * what is asked for, so `cli()` can only ever reach one-shot mode. `spawn`
+ * does honour it: stdin hits EOF immediately, `rl.question()` rejects with
+ * nothing to wait on, and the process exits on its own — same env setup as
+ * `cli()`, just launched directly.
+ */
+function interactive(stub, args = [], { env: extra = {} } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'kronk-home-'));
+  const env = { ...process.env, KRONK_URL: stub.url, HOME: home, NO_COLOR: '1' };
+  delete env.KRONK_MODEL;
+  delete env.KRONK_WARM;
+  delete env.KRONK_NO_THINK;
+  delete env.KRONK_PRESERVE_THINKING;
+  Object.assign(env, extra);
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, '--no-context', '--no-warm', ...args],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`interactive CLI did not exit on EOF; stdout so far:\n${stdout}`));
+    }, 10_000);
+    child.on('exit', () => { clearTimeout(timer); resolve({ stdout, stderr }); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+test('a profile that overrides the model prints exactly one grey note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 0.6, top_k: 20, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.match(out.stdout, /note {5}profile overrides the model's own sampling:/);
+  assert.match(out.stdout, /temperature 0\.6 \(model recommends 1\)/);
+  assert.ok(!/top_k|top_p/.test(out.stdout), 'only the parameter that actually differs is named');
+  assert.equal((out.stdout.match(/profile overrides the model's own sampling/g) ?? []).length, 1,
+    'one line however many parameters disagree');
+});
+
+test('two disagreeing parameters still produce a single line, not one each', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 0.6, top_k: 10, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.equal((out.stdout.match(/^ {2}note/gm) ?? []).length, 1, 'exactly one note line');
+  assert.match(out.stdout, /temperature 0\.6 \(model recommends 1\)/);
+  assert.match(out.stdout, /top_k 10 \(model recommends 20\)/);
+});
+
+test('a profile that matches the model produces no note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 1, top_k: 20, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'values agree — nothing to say');
+});
+
+test('a model with no sampling metadata at all produces no note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingParameters: { temperature: 0.6, top_k: 10, top_p: 0.5 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'no metadata to compare against is normal, not a warning');
+});
+
+test('a failing /kronk/models/{id} produces no note line and the session still proceeds', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    modelInfoStatus: 500,
+    samplingMetadata: { 'general.sampling.temp': '1' },
+    samplingParameters: { temperature: 0.6 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'the endpoint failing must not be mistaken for a difference');
+  // boot() must not throw or hang on the 500: the banner and the line after
+  // it (sandbox) both still print, and the session reaches the prompt.
+  assert.match(out.stdout, /kronk-cli/);
+  assert.match(out.stdout, /sandbox/);
+});
+
+test('one-shot mode prints nothing extra: the note follows the banner, and one-shot has no banner', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: { 'general.sampling.temp': '1' },
+    samplingParameters: { temperature: 0.6 },
+  });
+  const out = await cli(stub, ['--no-warm', 'hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  assert.ok(!/note|sampling|kronk-cli/.test(out.stdout),
+    'one-shot mode prints only the answer — no banner, no note line');
 });
 
 test('every request of a tool loop carries it, not only the first', async (t) => {

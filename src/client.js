@@ -34,6 +34,18 @@ const SAMPLING_KEYS = [
 // plausibly type (e.g. 0.6 vs 1).
 const SAMPLING_TOLERANCE = 1e-6;
 
+// `Number(null)` and `Number('')` are both 0, so coercing first and testing
+// Number.isFinite afterwards reads an absent value as a deliberate zero and
+// warns about a parameter nobody set. Kronk does emit both shapes in
+// `model_config` — `reasoning_effort` and `grammar` come back as empty strings
+// on this server today — so reject them before coercing, not after.
+function num(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Compare a model's own sampling metadata (GGUF values, always strings) against
  * the effective sampling-parameters Kronk is actually applying (profile-merged,
@@ -53,9 +65,9 @@ export function samplingOverride(metadata, sampling) {
   if (!metadata || !sampling) return null;
   const diffs = [];
   for (const { meta, effective, label } of SAMPLING_KEYS) {
-    const modelValue = Number(metadata[meta]);
-    const effectiveValue = Number(sampling[effective]);
-    if (!Number.isFinite(modelValue) || !Number.isFinite(effectiveValue)) continue;
+    const modelValue = num(metadata[meta]);
+    const effectiveValue = num(sampling[effective]);
+    if (modelValue === null || effectiveValue === null) continue;
     if (Math.abs(modelValue - effectiveValue) > SAMPLING_TOLERANCE) {
       diffs.push({ param: label, model: modelValue, effective: effectiveValue });
     }

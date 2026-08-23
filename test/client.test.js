@@ -56,3 +56,26 @@ test('a missing effective value is "no opinion", not a difference', () => {
 test('an unparsable effective object (null) is "no opinion", not a difference', () => {
   assert.equal(samplingOverride(AGREES, null), null);
 });
+
+// Number(null) and Number('') are both 0, so a guard that coerces first and
+// checks Number.isFinite afterwards reads an unset parameter as a deliberate
+// zero and warns about it. Kronk really does return both shapes inside
+// model_config, so these are reachable, not theoretical.
+test('an effective value of null is no opinion, not zero', () => {
+  assert.equal(samplingOverride(AGREES, { temperature: null, top_k: 20, top_p: 0.95 }), null);
+});
+
+test('a metadata value of null is no opinion, not zero', () => {
+  assert.equal(
+    samplingOverride({ ...AGREES, 'general.sampling.temp': null }, EFFECTIVE_AGREES),
+    null,
+  );
+});
+
+test('an empty-string value on either side is no opinion, not zero', () => {
+  assert.equal(
+    samplingOverride({ ...AGREES, 'general.sampling.temp': '' }, EFFECTIVE_AGREES),
+    null,
+  );
+  assert.equal(samplingOverride(AGREES, { ...EFFECTIVE_AGREES, top_k: '' }), null);
+});

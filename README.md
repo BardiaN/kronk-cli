@@ -533,6 +533,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_MAX_STEPS` | unlimited | Cap on tool calls per task |
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
+| `KRONK_PRESERVE_THINKING` | `true` | `false` stops pinning earlier think blocks in the prompt |
 | `KRONK_TOOL_TIMEOUT` | `900` | Seconds before a shell command is killed |
 | `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
 | `KRONK_SANDBOX_ALLOW` | — | Paths to make fully available inside the sandbox, comma or colon separated |
@@ -558,7 +559,8 @@ The per-turn usage line still prints after each response; this one is the runnin
   "showThinking": false,
   "autoCompact": true,
   "compactAt": 0.85,
-  "noThink": true
+  "noThink": true,
+  "preserveThinking": true
 }
 ```
 
@@ -635,6 +637,18 @@ the prefix stays stable and the server keeps the cache.
 Measured on Kronk 1.31.8, on a 13.4k-token conversation with the profile above: the first turn prefilled in
 10.9 s with nothing cached, and every following turn reported **13,4xx of 13,4xx tokens cached**
 and answered in 1.6 s.
+
+**You no longer have to set it.** kronk-cli sends `chat_template_kwargs: {preserve_thinking: true}`
+on every chat request, regardless of what the profile says, so an existing profile that predates
+this line gets the stable prefix anyway. It is sent only when the selected model's chat template
+actually declares the parameter — read from `tokenizer.chat_template` in
+`GET /v1/kronk/models/<id>` at startup — and never guessed at when that lookup fails.
+
+It is a trade, not a free win: the retained `<think>` blocks stay in the prompt and cost tokens.
+On a small window you may prefer to pay the prefill instead, so `KRONK_PRESERVE_THINKING=false`
+(or `"preserveThinking": false` in `~/.kronk-cli.json`) turns it off, and the status line says
+`no-preserve` when it is off. With `--no-think` there is no reasoning to preserve and the field is
+not sent at all.
 
 ---
 

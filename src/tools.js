@@ -5,7 +5,6 @@ import { resolve, relative, dirname, basename, isAbsolute } from 'node:path';
 import { realpathSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
-import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
 
 const exec = promisify(execFile);
@@ -102,29 +101,6 @@ export const TOOLS = [
 
   def('bash', 'Run a shell command in the working directory. Requires user approval.',
     { cmd: { type: 'string' } }, ['cmd']),
-
-  // The description is the only instruction a small model reliably reads, so it
-  // carries the whole protocol: call it first, one item per criterion, resend
-  // the entire list every time.
-  def('set_plan',
-    'Record the checklist for the current task and keep it updated. Call this first, with one '
-    + 'item per acceptance criterion in the request. Call it again after each item is finished. '
-    + 'The list you send replaces the stored one, so always send every item.',
-    {
-      items: {
-        type: 'array',
-        description: `The whole checklist, in order. At most ${MAX_ITEMS} items.`,
-        items: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'The requirement, in the words of the request.' },
-            status: { type: 'string', enum: ['todo', 'doing', 'done'] },
-          },
-          required: ['text'],
-        },
-      },
-    },
-    ['items']),
 ];
 
 /** Tools that mutate state or run arbitrary code must be confirmed. */
@@ -159,7 +135,6 @@ export function describe(name, args) {
     case 'list_dir':   return `ls ${args.path ?? '.'}`;
     case 'search':     return `search /${args.pattern}/ in ${args.path ?? '.'}`;
     case 'bash':       return `bash: ${args.cmd}`;
-    case 'set_plan':   return `plan: ${args.items?.length ?? 0} items`;
     default:           return `${name}(${JSON.stringify(args)})`;
   }
 }
@@ -404,9 +379,6 @@ export async function runTool(name, args, opts = {}) {
 
       case 'bash':
         return runBash(args.cmd, opts);
-
-      case 'set_plan':
-        return setPlan(args.items);
 
       default:
         return `error: unknown tool ${name}`;

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,11 +8,118 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { config, DEFAULT_MODEL } from '../src/config.js';
 import { pickDefault, ensureLoaded } from '../src/boot.js';
-import { startStub } from './fixtures/kronk-stub.js';
 
 const run = promisify(execFile);
 const CLI = new URL('../src/index.js', import.meta.url).pathname;
 const OTHER = 'stub/Other-Q4/AGENT';
+
+/**
+ * A Kronk stand-in with a controllable pool. `resident` is what
+ * /v1/kronk/models/ps reports; `fail` maps a model id to the status its
+ * admission should refuse with, which is how a model too large to fit
+ * announces itself. Every completion request is recorded so a test can prove
+ * what the CLI asked for — and, just as usefully, what it did not.
+ *
+ * `template` is served as the model's chat template, `modelInfoStatus` breaks
+ * that route, and `turns` scripts the streamed replies one per request, so a
+ * test can drive a real multi-step tool loop instead of a single answer.
+ *
+ * `samplingMetadata` and `samplingParameters` feed the same `/kronk/models/{id}`
+ * response: the model's own GGUF sampling values (strings, as Kronk reports
+ * them) and the effective `sampling-parameters` block after the profile is
+ * applied (numbers). Both default to absent, matching a model that ships no
+ * sampling metadata at all.
+ */
+function startStub({
+  ids, resident = [], fail = {}, template = null, modelInfoStatus = 200, turns = [],
+  samplingMetadata = null, samplingParameters = null,
+} = {}) {
+  const chat = [];
+  let turn = 0;
+  const send = (res, code, body) => {
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+
+  const server = createServer((req, res) => {
+    const url = req.url.split('?')[0];
+
+    if (url === '/v1/models') {
+      return send(res, 200, { object: 'list', data: ids.map((id) => ({ id, object: 'model' })) });
+    }
+    if (url === '/v1/kronk/models/ps') {
+      return send(res, 200, resident.map((id) => ({ id, status: 'loaded', vram_total: 1e9 })));
+    }
+    if (url.startsWith('/v1/kronk/models')) {
+      if (modelInfoStatus !== 200) {
+        return send(res, modelInfoStatus, { error: { message: 'model info unavailable' } });
+      }
+      return send(res, 200, {
+        model_config: {
+          'context-window': 4096,
+          ...(samplingParameters ? { 'sampling-parameters': samplingParameters } : {}),
+        },
+        metadata: {
+          'stub.context_length': '8192',
+          ...(template ? { 'tokenizer.chat_template': template } : {}),
+          ...(samplingMetadata ?? {}),
+        },
+        data: [],
+      });
+    }
+    if (url === '/v1/tokenize') return send(res, 200, { tokens: 7 });
+
+    if (url === '/v1/chat/completions') {
+      let raw = '';
+      req.on('data', (d) => { raw += d; });
+      return req.on('end', () => {
+        const body = JSON.parse(raw);
+        chat.push(body);
+        if (fail[body.model]) {
+          return send(res, fail[body.model], { error: { message: 'insufficient VRAM for admission' } });
+        }
+        if (!body.stream) {
+          return send(res, 200, {
+            id: 'chatcmpl-stub',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'length' }],
+          });
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const chunk = (delta, finish = null) => JSON.stringify({
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        });
+        const script = turns[turn++] ?? { text: 'STUB_OK' };
+        if (script.tool) {
+          const [name, args] = script.tool;
+          res.write(`data: ${chunk({
+            role: 'assistant',
+            tool_calls: [{
+              index: 0, id: `call_${turn}`, type: 'function',
+              function: { name, arguments: JSON.stringify(args) },
+            }],
+          })}\n`);
+          res.write(`data: ${chunk({}, 'tool_calls')}\n`);
+        } else {
+          res.write(`data: ${chunk({ role: 'assistant', content: script.text })}\n`);
+          res.write(`data: ${chunk({}, 'stop')}\n`);
+        }
+        res.write('data: [DONE]\n');
+        res.end();
+      });
+    }
+    return send(res, 404, { error: { message: `stub has no route for ${url}` } });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({
+      url: `http://127.0.0.1:${server.address().port}/v1`,
+      chat,
+      // undici keeps the socket alive, so a plain close() would leave the test
+      // process holding an open handle long after the assertions are done.
+      close: () => { server.closeAllConnections(); server.close(); },
+    }));
+  });
+}
 
 /** Point the module-level config at a stub for one test, then put it back. */
 async function against(stub, model, fn) {

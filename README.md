@@ -855,10 +855,6 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `search` | — | Regex search via ripgrep, falling back to grep |
 | `write_file` | ✋ | Create or overwrite; shows a diff preview first |
 | `bash` | ✋ | Run a command; shows it first |
-| `set_plan` | — | Record the task checklist; replaces the stored one |
-
-`set_plan` writes nothing and runs nothing — it hands the harness a list, which is why it is
-never gated. See [Autonomous mode](#autonomous-mode) for what the harness then does with it.
 
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
 escape the launch root — including through a symlink. `bash` additionally runs under an OS
@@ -1081,32 +1077,6 @@ $ kronk-cli --auto "write a CSV stats script, add a node:test, run it, fix what 
 
 `Ctrl-C` stops it. Add `--steps N` for unattended runs where nobody is watching.
 
-**The task checklist.** Long tickets used to end early: the model satisfied one criterion of a
-dozen, wrote a confident summary, and stopped. The autonomous prompt now tells it to call
-`set_plan` before its first edit, with one item per acceptance criterion, and to update the list
-as it goes. The harness holds that list and does two things with it:
-
-- **Re-states it every round.** One reminder message — the open items, verbatim, and how many of
-  how many are done — is kept at the end of the conversation and replaced in place, so the
-  original request is never thousands of tokens behind. It is held outside the message list as
-  well, so [compaction](#compaction) cannot summarise it away.
-- **Declines the first premature "done".** A reply with no tool calls, while items are still
-  open, gets the open list handed back instead of ending the run. Twice at most: after that the
-  turn ends and the unfinished items are printed in yellow. `--steps` still wins, and `Ctrl-C`
-  still stops everything.
-
-```console
-  1 ⚙ plan: 4 items
-    · keep the push trigger on master
-    ▸ add the concurrency guard
-    · document the change in README.md
-    · run the linter
-```
-
-None of this fires without a plan: if the model never calls `set_plan`, a run behaves exactly as
-it did before, and interactive (non-`--auto`) conversation is never held to a checklist. The
-model writes the plan; the harness only holds it to it.
-
 > ⚠️ `--auto` runs shell commands without asking. Use it where `git checkout` can save you.
 
 ---
@@ -1135,7 +1105,6 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/tools.js` | tool definitions, sandbox, shell session |
 | `src/context.js` | startup scan: git, layout, `AGENTS.md` |
 | `src/compact.js` | summarizing the conversation when the window fills |
-| `src/plan.js` | the task checklist and the reminder the model sees |
 | `src/mcp.js` | MCP client: stdio + HTTP transports, tool routing |
 | `src/distill.js` | summarizing large tool output in a throwaway context |
 | `src/config.js` | precedence of flags, env, config file |

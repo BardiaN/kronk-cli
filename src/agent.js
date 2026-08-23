@@ -4,6 +4,9 @@ import { config, shouldPreserveThinking } from './config.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
+import {
+  clearPlan, dropReminder, openItems, outstandingLines, planLines, syncReminder,
+} from './plan.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
 
@@ -16,16 +19,17 @@ Rules:
 export const SYSTEM_AUTO = `${SYSTEM}
 
 You are running autonomously on a whole task. Finish it before you stop.
+- Before your first edit, call set_plan with one item per acceptance criterion, requirement or checkbox in the request. Copy the wording of the request; do not paraphrase it into something easier.
+- If the request calls a step required, mandatory, or a first step, it is an item, and it is done before the work it gates.
+- Update the plan with set_plan after each item. Record progress with the tool, not in prose.
 - Do not ask the user questions. Make a reasonable choice and proceed.
 - After you write code, RUN it with bash and fix whatever breaks.
 - Never claim something works unless you have executed it and seen the output.
 - Work in small steps: one file or one command per tool call.
-- When the task is genuinely done, reply with a short summary of what you changed.`;
+- Do not reply with a summary while any item is not done. If an item cannot be completed, say in your reply why it was not possible, and only then mark it done — never silently.
+- Before the final reply, re-read the original request and check every item against it.
+- When every item is genuinely done, reply with a short summary of what you changed.`;
 
-/**
- * Run one user turn to completion, looping while the model requests tools.
- * `approve(name, args)` returns a boolean; used for mutating tools.
- */
 /** Compact in place, preserving the caller's array identity. */
 async function compactInto(messages, model, signal) {
   const res = await compact(messages, { model, signal });
@@ -35,11 +39,42 @@ async function compactInto(messages, model, signal) {
   return true;
 }
 
-export async function runTurn({ messages, model, signal, approve, mcp, maxSteps = config.maxSteps }) {
+/** How many times a premature "done" is handed back before the turn ends anyway. */
+const MAX_NUDGES = 2;
+
+/**
+ * Leave the transcript fit to be continued, and say what was not finished.
+ *
+ * The reminder goes on every exit: it is a `user` message, so leaving it as the
+ * last one would put it directly before the next typed prompt, and two
+ * adjacent user messages are what chat templates merge or reject.
+ */
+function endTurn(messages) {
+  dropReminder(messages);
+  outstandingLines().forEach((l) => console.log(l));
+  return messages;
+}
+
+/**
+ * Run one user turn to completion, looping while the model requests tools.
+ *
+ * `approve(name, args)` returns a boolean; used for mutating tools. `auto` is
+ * autonomous mode — the system prompt in force, not `--yes` — and is what
+ * decides whether a premature "done" is handed back or accepted.
+ */
+export async function runTurn({
+  messages, model, signal, approve, mcp, auto = false, maxSteps = config.maxSteps,
+}) {
   const tools = mcp ? [...TOOLS, ...mcp.toolDefs()] : TOOLS;
   let totalUsage = null;
   let step = 0;
   let compacted = false;
+  let nudges = 0;
+
+  // A plan belongs to one task. Clearing here also drops a reminder stranded by
+  // a turn that was interrupted rather than returned from.
+  clearPlan();
+  dropReminder(messages);
 
   for (;;) {
     step += 1;
@@ -47,7 +82,7 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
       console.log(c.yellow(`  ⛔ step cap reached (${maxSteps}). Stopping.`));
       console.log(c.grey('     raise it with --steps N, or /steps N in the REPL'));
       messages.push({ role: 'assistant', content: '(stopped: step cap reached)' });
-      return messages;
+      return endTurn(messages);
     }
     let sp = spinner('thinking');
     let text = '';
@@ -91,7 +126,14 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
       if (isOverflow(e) && !compacted) {
         compacted = true;
         console.log(c.yellow('\n  context full — compacting and retrying'));
-        if (await compactInto(messages, model, signal)) { step -= 1; continue; }
+        // Compaction has just thrown the reminder away with everything else,
+        // and this path retries without ever reaching the end of a round, so
+        // put it back before the request goes out again.
+        if (await compactInto(messages, model, signal)) {
+          syncReminder(messages);
+          step -= 1;
+          continue;
+        }
       }
       throw e;
     } finally {
@@ -123,7 +165,18 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
       } else {
         messages.push({ role: 'assistant', content: text });
       }
-      return messages;
+
+      // A plan with open items means it stopped early. Hand the list back and
+      // keep going — but only when nobody is watching, and only twice: past
+      // that the model is not going to finish, and looping is worse than
+      // reporting what is left.
+      if (auto && openItems().length && nudges < MAX_NUDGES) {
+        nudges += 1;
+        syncReminder(messages, { nudge: true });
+        console.log(c.yellow(`  ⚠ ${openItems().length} checklist items still open — continuing`));
+        continue;
+      }
+      return endTurn(messages);
     }
 
     messages.push({
@@ -179,14 +232,23 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
         live.done();
       }
 
-      result = await maybeDistill(result, {
-        model, signal, command: args.cmd ?? describe(call.name, args),
-      });
+      // set_plan hands back a rendering of what the harness just stored; paying a
+      // second model call to paraphrase our own text would be pure waste.
+      if (call.name !== 'set_plan') {
+        result = await maybeDistill(result, {
+          model, signal, command: args.cmd ?? describe(call.name, args),
+        });
+      }
       const failed = result.startsWith('error:');
       if (failed) toolResultLines(result).forEach((l) => console.log(l));
+      else if (call.name === 'set_plan') planLines().forEach((l) => console.log(l));
       else console.log(c.grey(`  ✓ ${result.split('\n').length} lines`));
       messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     }
+
+    // After the last tool result, never between one and the assistant message
+    // that asked for it.
+    syncReminder(messages);
     // loop: the model now sees the tool output
   }
 }

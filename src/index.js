@@ -312,7 +312,7 @@ async function oneShot(prompt) {
     return false;
   };
   try {
-    await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp });
+    await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: AUTO });
   } catch (e) {
     if (e.name !== 'AbortError') { console.error(c.red(`  ${e.message}`)); process.exitCode = 1; }
   } finally {
@@ -395,6 +395,9 @@ async function main() {
     : c.grey(`paths + ${backend}`)}\n`);
 
   const messages = [{ role: 'system', content }];
+  // The system prompt is the one record of which mode we are in — /auto rewrites
+  // it — so both the status line and the turn read the answer from there.
+  const isAuto = () => messages[0].content.startsWith(SYSTEM_AUTO);
 
   // Ctrl-C aborts the in-flight request instead of killing the process.
   let ac = null;
@@ -413,7 +416,7 @@ async function main() {
   for (;;) {
     const status = statusLine({
       model: config.model,
-      auto: autoApprove && messages[0].content.startsWith(SYSTEM_AUTO),
+      auto: autoApprove && isAuto(),
       yes: autoApprove,
       noThink: config.noThink,
       // Only news when the model could have had it and the user said no.
@@ -447,9 +450,8 @@ async function main() {
       continue;
     }
     if (input === '/auto') {
-      const now = !messages[0].content.startsWith(SYSTEM_AUTO);
-      const primer = messages[0].content.slice(
-        (messages[0].content.startsWith(SYSTEM_AUTO) ? SYSTEM_AUTO : SYSTEM).length);
+      const now = !isAuto();
+      const primer = messages[0].content.slice((isAuto() ? SYSTEM_AUTO : SYSTEM).length);
       messages[0] = { role: 'system', content: (now ? SYSTEM_AUTO : SYSTEM) + primer };
       autoApprove = now;
       console.log(c.grey(`  autonomous mode ${now ? 'on — tools auto-approved, runs to completion' : 'off'}`));
@@ -517,7 +519,7 @@ async function main() {
     messages.push({ role: 'user', content: input });
     ac = new AbortController();
     try {
-      await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp });
+      await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: isAuto() });
     } catch (e) {
       if (e.name === 'AbortError') messages.push({ role: 'assistant', content: '(interrupted)' });
       else console.error(c.red(`\n  ${e.message}`));

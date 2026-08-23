@@ -321,7 +321,98 @@ kronk-cli "explain src/agent.js"            # one shot, prints and exits
 git diff | kronk-cli "review this diff"     # stdin as extra context
 git log --oneline -20 | kronk-cli           # stdin as the whole prompt
 kronk-cli --auto "make the tests pass"      # unattended, runs the whole task
+kronk-cli setup                             # first run: model, profile, restart
 ```
+
+---
+
+## Subcommands
+
+### `kronk-cli setup`
+
+The three things a fresh install needs — the model on disk, an `/AGENT` profile for it, and a
+server restart so Kronk reads that profile — walked in order, announcing each step. `--dry-run`
+walks the whole thing and prints what it *would* do, which is the safest way to see it:
+
+```console
+$ kronk-cli setup --dry-run --model unsloth/Qwen3-0.6B-Q8_0/AGENT
+
+  kronk-cli setup  · dry run, nothing will change
+
+  1) Checking the Kronk server
+     http://localhost:11435/v1 · serving 2 models
+
+  2) Resolving the target
+     profile  unsloth/Qwen3-0.6B-Q8_0/AGENT
+     catalog  unsloth/Qwen3-0.6B-Q8_0
+     binary   /opt/homebrew/bin/kronk
+
+  3) Checking whether the model is downloaded
+     would run: kronk catalog show unsloth/Qwen3-0.6B-Q8_0 --local
+
+  4) Downloading the model
+     would run: kronk model pull unsloth/Qwen3-0.6B-Q8_0
+
+  5) Writing the /AGENT profile
+     file  ~/.kronk/models/model_config.yaml
+     This block will be added:
+
+       unsloth/Qwen3-0.6B-Q8_0/AGENT:
+         context-window: 131072
+         nseq-max: 2
+         chat-template-kwargs:
+           preserve_thinking: true
+         sampling-parameters:
+           max_tokens: 16384
+
+     would update: ~/.kronk/models/model_config.yaml
+     would back up first: ~/.kronk/models/model_config.yaml.bak…
+
+  6) Restarting Kronk
+     model_config.yaml is read only when the server starts, so the new
+     profile does nothing until Kronk is restarted.
+     would run: kronk server stop
+     would run: kronk server start --detach
+
+  Dry run complete — nothing was written and nothing was started.
+```
+
+| Flag | |
+|---|---|
+| `--model <id>` | Set up a model other than the default. A trailing `/AGENT` is a Kronk profile name, not a catalog id, so it is stripped before pulling |
+| `--context <n>` | Override the profile's `context-window`. Default `131072`, capped at the model's native maximum when Kronk reports one |
+| `-y`, `--yes` | Answer every prompt yes. Required in CI |
+| `--dry-run` | Print every action, including the exact YAML and the exact commands, and change nothing |
+
+Nothing slow or destructive happens without an answer: the pull, the file write and the restart
+are each confirmed. Declining exits 0 and prints the commands you would run by hand. If the
+`kronk` binary is not on `PATH`, setup prints the whole manual recipe instead of failing with a
+spawn error. Run it twice and the second run does nothing.
+
+Piped or unattended input answers the first question only — readline discards lines nobody is
+waiting for — so a question with no answer left is a **no**: setup says `stdin ended, assuming
+no`, prints the command, and exits 0. Scripts and CI want `-y`.
+
+**What it writes.** Only the `models:` mapping of `~/.kronk/models/model_config.yaml` — point it
+elsewhere with `KRONK_MODEL_CONFIG`. This project has no YAML parser and will not gain one, so
+the writer is a structural scan with a single job — find the one `models:` key and splice the
+entry beneath it — and it refuses whenever the answer is not obvious:
+
+- The file is copied aside before any write, to `model_config.yaml.bak`, and **never over a
+  backup that already exists**: `.bak2`, `.bak3`, and so on until a free name is found.
+- Every line it did not add survives byte for byte — comments, blank lines and key order
+  included. LF and CRLF files each keep their own endings.
+- Missing file → created with `version: 1`, `models:` and the entry. No `models:` key → both are
+  appended. A `models:` key with no children → the entry becomes its first child.
+- **More than one top-level `models:` key** — two concatenated documents, which does happen in
+  the wild — is refused outright. It prints the block, names the file, and exits non-zero
+  without touching anything.
+- A missing `~/.kronk/models/` means Kronk has never run. Setup says so and stops, rather than
+  creating Kronk's data directory on its behalf.
+
+The profile it writes is the one documented under
+[Tip: use an `/AGENT` profile](#tip-use-an-agent-profile) — `context-window`, `nseq-max`,
+`preserve_thinking` and `max_tokens`, and deliberately no sampling parameters.
 
 ---
 
@@ -437,6 +528,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_URL` | `http://localhost:11435/v1` | Kronk API base |
 | `KRONK_TOKEN` | `kronk` | Any non-empty value while Kronk runs open; a real JWT when protected |
 | `KRONK_MODEL` | `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` | Model id |
+| `KRONK_MODEL_CONFIG` | `~/.kronk/models/model_config.yaml` | Kronk's per-model config, the file `kronk-cli setup` writes |
 | `KRONK_MAX_TOKENS` | `8192` | Output cap per response |
 | `KRONK_MAX_STEPS` | unlimited | Cap on tool calls per task |
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
@@ -510,7 +602,9 @@ memory it holds.
 
 ### Tip: use an `/AGENT` profile
 
-Kronk lets one GGUF serve several runtime configurations. Add this to
+Kronk lets one GGUF serve several runtime configurations. `kronk-cli setup` writes this profile
+for you, backs the file up first, and offers the restart — see
+[Subcommands](#kronk-cli-setup). To do it by hand, add this to
 `~/.kronk/models/model_config.yaml` and restart the server:
 
 ```yaml

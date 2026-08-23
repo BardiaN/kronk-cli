@@ -12,6 +12,7 @@ import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
+import { runSetup } from './setup.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
@@ -29,6 +30,11 @@ if (args.help) {
     kronk-cli                       start the interactive REPL
     kronk-cli "<prompt>"            run one prompt and exit
     <cmd> | kronk-cli "<prompt>"    pipe stdin in as extra context
+
+  SUBCOMMANDS
+    kronk-cli setup [--model <id>] [--context <n>] [-y] [--dry-run]
+                                    pull the model, write its /AGENT profile to
+                                    ~/.kronk/models/model_config.yaml, restart Kronk
 
   OPTIONS
     -l, --models        list the models Kronk is serving, then exit
@@ -50,6 +56,7 @@ if (args.help) {
     KRONK_URL           default http://localhost:11435/v1
     KRONK_TOKEN         any non-empty value when Kronk runs open
     KRONK_MODEL         overrides the default model
+    KRONK_MODEL_CONFIG  path to Kronk's model_config.yaml, used by setup
     KRONK_MAX_TOKENS    output cap per response (default 8192)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
     KRONK_NO_THINK      set to 1 to disable reasoning
@@ -309,6 +316,23 @@ async function oneShot(prompt) {
 async function main() {
   // Before anything reaches the network, on every path through the program.
   warnIfInsecure();
+
+  // Subcommands are dispatched before the one-shot path below, so `setup` is
+  // never mistaken for a one-word prompt and sent to the model.
+  if (args.words[0] === 'setup') {
+    if (args.words.length > 1) {
+      console.error(`\n  setup takes no arguments — got: ${args.words.slice(1).join(' ')}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = await runSetup({
+      model: args.model,
+      context: args.context,
+      yes: args.yes,
+      dryRun: args.dryRun,
+    });
+    return;
+  }
 
   if (SHOW_MODELS) { await showModels(); return; }
   if (SHOW_MCP) { await showMcp(); process.exit(0); }

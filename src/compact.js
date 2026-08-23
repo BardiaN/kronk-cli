@@ -68,10 +68,14 @@ function transcript(messages) {
  * way for the same reason — it belongs to a tool loop that no longer exists
  * after this — and the replacement below is built literally, so a compacted
  * history cannot carry a `reasoning_content` from before the summary.
+ *
+ * `auto` is passed straight to `forRequest`: the summarizer must see the same
+ * reasoning-replay view of the current task as the wire request that
+ * triggered it, not a second, independently-computed answer.
  */
-export async function compact(messages, { model, signal } = {}) {
+export async function compact(messages, { model, signal, auto = false } = {}) {
   const system = messages[0];
-  const raw = transcript(forRequest(messages));
+  const raw = transcript(forRequest(messages, auto));
   if (!raw.trim()) return { messages, before: 0, after: 0 };
 
   const before = await tokenize(model, [system.content, raw].join('\n'));

@@ -620,7 +620,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
 | `KRONK_PRESERVE_THINKING` | `true` | `false` stops pinning earlier think blocks in the prompt |
-| `KRONK_REPLAY_REASONING` | `true` | `false` stops sending the current task's reasoning back to the model |
+| `KRONK_REPLAY_REASONING` | autonomous-only | `true`/`false` overrides the default in either direction — see [What reasoning gets sent back](#what-reasoning-gets-sent-back) |
 | `KRONK_TOOL_TIMEOUT` | `900` | Seconds before a shell command is killed |
 | `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
 | `KRONK_SANDBOX_ALLOW` | — | Paths to make fully available inside the sandbox, comma or colon separated |
@@ -744,13 +744,14 @@ not sent at all.
 
 `preserve_thinking` decides how the template *renders* a think block. What is in that block is a
 separate question, and kronk-cli answers it like this: **the model's reasoning is replayed for the
-current task and dropped for everything before it.**
+current task and dropped for everything before it — by default in `--auto`, and never by default
+in the interactive REPL.**
 
 Concretely, an assistant message keeps its `reasoning_content` on the wire while it sits after the
 most recent real user prompt. A tool result is `role: tool`, so it does not end the task — one
-prompt and the whole tool loop it started share the boundary. The moment you type again, the
-previous task's blocks are stripped and render empty. That is the same boundary the chat template
-computes as `ns.last_query_index`.
+prompt and the whole tool loop it started share the boundary. The moment a new user prompt arrives,
+the previous task's blocks are stripped and render empty. That is the same boundary the chat
+template computes as `ns.last_query_index`.
 
 Within a task the model reasons about tool result N before it picks tool N+1, and dropping that
 makes it re-derive its plan from tool output alone at every step. Those tokens are also
@@ -758,13 +759,25 @@ append-only — new on every step, never part of the cached prefix — so replay
 in cache terms. Reasoning from *earlier* turns is the opposite: it sits in the prefix for the rest
 of the session, grows without bound, and brings automatic compaction forward.
 
-It is a trade, and the bill arrives at your next prompt. Stripping the previous task's blocks
-changes the prefix, so the first turn of every new prompt re-prefills. Measured over five paired
-sessions on Kronk 1.31.9 with `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` (llama.cpp `b10549`,
-darwin/arm64/metal) — the same multi-step task, nine to twenty-four tool calls depending on the
-run, followed by the same follow-up question:
+It is a trade, and the bill arrives at your *next* prompt: stripping the previous task's blocks at
+the boundary rewrites the prefix that prompt sits after, so the request resets to the cached system
+prompt instead of the cached conversation and re-prefills the rest. Measured on a live server, first
+turn after a second prompt, prompt tokens cached vs. re-prefilled:
 
-| | replay on (default) | replay off |
+| | cached | re-prefilled |
+|---|---|---|
+| never replay | 906 | 60 |
+| replay current task | 757 | 516 |
+| replay everything | 1,827 | 367 |
+
+`--auto` runs exactly one user prompt through a whole tool loop, so that boundary is never crossed
+in a run: the within-task benefit above is free there, and the reset never happens. The REPL is a
+user typing repeatedly, so every prompt after the first pays it. Measured over five paired sessions
+on Kronk 1.31.9 with `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` (llama.cpp `b10549`,
+darwin/arm64/metal) with replay forced on for the whole session — the same multi-step task, nine to
+twenty-four tool calls depending on the run, followed by the same follow-up question:
+
+| | replay on | replay off |
 |---|---|---|
 | Prompt tokens at end of session | 10,179 / 11,238 / 7,960 / 10,018 / 9,470 | 20,640 / 8,889 / 10,648 / 10,259 / 13,209 |
 | Model turns to finish the first task | 6 / 7 / 2 / 7 / 8 | 9 / 9 / 7 / 7 / 5 |
@@ -772,15 +785,18 @@ run, followed by the same follow-up question:
 | Time to first token on that turn | 5.9 / 7.4 / 4.4 / 5.9 / 6.5 s | 1.2 / 0.8 / 0.9 / 0.7 / 1.1 s |
 | Wall clock, three timed pairs | 51 / 63 / 50 s | 68 / 49 / 55 s |
 
-So: fewer turns and fewer prompt tokens over a session, paid for with one re-prefill per prompt.
-Sampling is at the model's own `temperature: 1`, so the turn counts are indicative rather than
-reproducible.
+So: fewer turns and fewer prompt tokens over a session, paid for with one re-prefill per prompt —
+4.4-7.4 s to first token instead of 0.7-1.2 s once cached. That cost is only worth paying when there
+is exactly one prompt to begin with, which is why the default is autonomous-only rather than on
+everywhere. Sampling is at the model's own `temperature: 1`, so the turn counts above are indicative
+rather than reproducible.
 
-`KRONK_REPLAY_REASONING=false`, or `"replayReasoning": false` in `~/.kronk-cli.json`, turns the
-replay off; earlier behaviour returns, with an empty think block on every assistant turn. It is
-already off when `--no-think` is set — there is no reasoning to replay — and when the selected
-model's chat template does not declare `preserve_thinking`, because such a template does not read
-`reasoning_content` either and would discard the blocks.
+`KRONK_REPLAY_REASONING`, or `"replayReasoning"` in `~/.kronk-cli.json`, overrides the default in
+either direction rather than just turning it off: `true` replays reasoning in the REPL too, `false`
+turns it off even in `--auto`. Leaving it unset is what gives you the autonomous-only default. It is
+off regardless of `--auto` when `--no-think` is set — there is no reasoning to replay — and when the
+selected model's chat template does not declare `preserve_thinking`, because such a template does
+not read `reasoning_content` either and would discard the blocks.
 
 ---
 

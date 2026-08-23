@@ -40,9 +40,15 @@ You are running autonomously on a whole task. Finish it before you stop.
  */
 const thought = (reasoning) => (reasoning ? { reasoning_content: reasoning } : {});
 
-/** Compact in place, preserving the caller's array identity. */
-async function compactInto(messages, model, signal) {
-  const res = await compact(messages, { model, signal });
+/**
+ * Compact in place, preserving the caller's array identity.
+ *
+ * `auto` is passed through so the summarizer sees the same reasoning-replay
+ * view as the wire request that just overflowed — see `compact` in
+ * src/compact.js.
+ */
+async function compactInto(messages, model, signal, auto) {
+  const res = await compact(messages, { model, signal, auto });
   if (res.failed || res.skipped) { console.log(report(res)); return false; }
   messages.splice(0, messages.length, ...res.messages);
   console.log(report(res));
@@ -68,8 +74,10 @@ function endTurn(messages) {
  * Run one user turn to completion, looping while the model requests tools.
  *
  * `approve(name, args)` returns a boolean; used for mutating tools. `auto` is
- * autonomous mode — the system prompt in force, not `--yes` — and is what
- * decides whether a premature "done" is handed back or accepted.
+ * autonomous mode — the system prompt in force, not `--yes` — and decides
+ * both whether a premature "done" is handed back or accepted, and (via
+ * src/reasoning.js) whether the current task's reasoning defaults to being
+ * replayed on the wire.
  */
 export async function runTurn({
   messages, model, signal, approve, mcp, auto = false, maxSteps = config.maxSteps,
@@ -106,7 +114,7 @@ export async function runTurn({
         model,
         // The history keeps every step's reasoning; only the current task's
         // share of it goes on the wire. See src/reasoning.js.
-        messages: forRequest(messages),
+        messages: forRequest(messages, auto),
         tools,
         signal,
         maxTokens: config.maxTokens,
@@ -152,7 +160,7 @@ export async function runTurn({
         // result left to carry one, and inserting a message here would be the
         // rewrite `carryChecklist` exists to avoid. The next round's tool
         // results carry the plan again.
-        if (await compactInto(messages, model, signal)) {
+        if (await compactInto(messages, model, signal, auto)) {
           step -= 1;
           continue;
         }
@@ -173,7 +181,7 @@ export async function runTurn({
       const used = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
       if (used / config.contextWindow >= config.compactAt) {
         console.log(c.yellow(`  context ${Math.round((used / config.contextWindow) * 100)}% full — compacting`));
-        if (!await compactInto(messages, model, signal)) config.autoCompact = false;
+        if (!await compactInto(messages, model, signal, auto)) config.autoCompact = false;
       }
     }
 

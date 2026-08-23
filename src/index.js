@@ -480,7 +480,7 @@ async function main() {
     if (input === '/compact') {
       if (messages.length < 2) { console.log(c.grey('  nothing to compact')); continue; }
       const sp = new AbortController();
-      const res = await compact(messages, { model: config.model, signal: sp.signal });
+      const res = await compact(messages, { model: config.model, signal: sp.signal, auto: isAuto() });
       if (res.failed) { console.log(c.red('  compaction produced nothing — conversation unchanged')); continue; }
       if (!res.skipped) messages.splice(0, messages.length, ...res.messages);
       console.log(report(res));
@@ -490,7 +490,7 @@ async function main() {
       // Count what the next request would actually carry, replayed reasoning
       // included — the history holds reasoning that is never sent, and a meter
       // that charged for it would read high for the whole session.
-      const used = await tokenize(config.model, forRequest(messages)
+      const used = await tokenize(config.model, forRequest(messages, isAuto())
         .map((m) => `${m.reasoning_content ?? ''}${m.content ?? ''}`).join('\n'));
       console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
       console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`

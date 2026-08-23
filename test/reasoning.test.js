@@ -208,7 +208,45 @@ test('forRequest never mutates the caller history, and drops an empty string', (
   } finally { Object.assign(config, saved); }
 });
 
+// ---- the tri-state default: unset follows `auto`, set overrides it --------
+
+test('with replayReasoning unset, the auto argument alone decides', () => {
+  const saved = { ...config };
+  Object.assign(config, { replayReasoning: undefined, templatePreservesThinking: true, noThink: false });
+  try {
+    assert.deepEqual(forRequest(HISTORY(), true).map((m) => m.reasoning_content),
+      [undefined, undefined, undefined, undefined, 'STEP_ONE', undefined, 'STEP_TWO', undefined],
+      'auto: true replays the current task, same as the explicit-on case above');
+    assert.deepEqual(forRequest(HISTORY(), false).filter((m) => m.reasoning_content), [],
+      'auto: false (or omitted) replays nothing');
+    assert.deepEqual(forRequest(HISTORY()).filter((m) => m.reasoning_content), [],
+      'and that is also the default when auto is not passed at all');
+  } finally { Object.assign(config, saved); }
+});
+
+test('replayReasoning: true forces replay on even when auto is false', () => {
+  const saved = { ...config };
+  Object.assign(config, { replayReasoning: true, templatePreservesThinking: true, noThink: false });
+  try {
+    assert.deepEqual(forRequest(HISTORY(), false).map((m) => m.reasoning_content),
+      [undefined, undefined, undefined, undefined, 'STEP_ONE', undefined, 'STEP_TWO', undefined]);
+  } finally { Object.assign(config, saved); }
+});
+
+test('replayReasoning: false forces replay off even when auto is true', () => {
+  const saved = { ...config };
+  Object.assign(config, { replayReasoning: false, templatePreservesThinking: true, noThink: false });
+  try {
+    assert.deepEqual(forRequest(HISTORY(), true).filter((m) => m.reasoning_content), []);
+  } finally { Object.assign(config, saved); }
+});
+
 // ---- what actually goes on the wire ------------------------------------
+//
+// Replay now defaults on for `--auto` and off otherwise (see the tri-state
+// tests above), so the mechanics tests here — which are about how reasoning
+// is captured and joined, not about the default itself — run autonomous to
+// put replay in its on state.
 
 test('1. streamed reasoning comes back on the next request, and only then', async () => {
   const stub = await startStub({
@@ -217,7 +255,7 @@ test('1. streamed reasoning comes back on the next request, and only then', asyn
       { reasoning: 'That is enough to answer.', text: 'STUB_OK' },
     ],
   });
-  const out = await cli(stub, ['look around']);
+  const out = await cli(stub, ['--auto', 'look around']);
   stub.close();
 
   assert.match(out.stdout, /STUB_OK/);
@@ -255,7 +293,7 @@ test('3. reasoning interleaved with content assembles into one well-formed messa
       { text: 'STUB_OK' },
     ],
   });
-  const out = await cli(stub, ['hello']);
+  const out = await cli(stub, ['--auto', 'hello']);
   stub.close();
 
   assert.match(out.stdout, /STUB_OK/);
@@ -271,7 +309,7 @@ test('4. tool_calls and reasoning coexist in the replayed message', async () => 
       { text: 'STUB_OK' },
     ],
   });
-  const out = await cli(stub, ['look at src']);
+  const out = await cli(stub, ['--auto', 'look at src']);
   stub.close();
 
   assert.match(out.stdout, /STUB_OK/);
@@ -289,7 +327,9 @@ test('4. tool_calls and reasoning coexist in the replayed message', async () => 
   assert.equal(body.messages.at(-1).role, 'tool', 'the tool result still follows its call');
 });
 
-test('6. the config key off, by env and by file, sends no reasoning at all', async () => {
+test('6. the config key off, by env and by file, overrides the autonomous default to off', async () => {
+  // Autonomous, so the default here is on: this proves the override beats it,
+  // not merely that it agrees with an already-off default.
   for (const how of [{ env: { KRONK_REPLAY_REASONING: 'false' } }, { rc: { replayReasoning: false } }]) {
     const stub = await startStub({
       turns: [
@@ -297,7 +337,7 @@ test('6. the config key off, by env and by file, sends no reasoning at all', asy
         { reasoning: 'and again', text: 'STUB_OK' },
       ],
     });
-    const out = await cli(stub, ['look around'], how);
+    const out = await cli(stub, ['--auto', 'look around'], how);
     stub.close();
 
     assert.match(out.stdout, /STUB_OK/, JSON.stringify(how));
@@ -309,6 +349,39 @@ test('6. the config key off, by env and by file, sends no reasoning at all', asy
   }
 });
 
+test('KRONK_REPLAY_REASONING=true overrides the interactive default to on', async () => {
+  // Non-autonomous, so the default here is off: this proves the override
+  // beats it, not merely that it agrees with an already-on default.
+  const stub = await startStub({
+    turns: [
+      { reasoning: 'thinking about it', tool: ['list_dir', { path: '.' }] },
+      { reasoning: 'and again', text: 'STUB_OK' },
+    ],
+  });
+  const out = await cli(stub, ['look around'], { env: { KRONK_REPLAY_REASONING: 'true' } });
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const [, second] = turnsOf(stub);
+  assert.deepEqual(assistants(second).map((m) => m.reasoning_content), ['thinking about it']);
+});
+
+test('interactive (non-autonomous) run replays no reasoning, even though the template supports it', async () => {
+  const stub = await startStub({
+    turns: [
+      { reasoning: 'thinking about it', tool: ['list_dir', { path: '.' }] },
+      { reasoning: 'and again', text: 'STUB_OK' },
+    ],
+  });
+  const out = await cli(stub, ['look around']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  for (const body of stub.chat) {
+    for (const m of body.messages) assert.ok(!('reasoning_content' in m));
+  }
+});
+
 test('a template that does not declare preserve_thinking gets no reasoning either', async () => {
   const stub = await startStub({
     template: NO_SUPPORT,
@@ -317,7 +390,10 @@ test('a template that does not declare preserve_thinking gets no reasoning eithe
       { text: 'STUB_OK' },
     ],
   });
-  const out = await cli(stub, ['look around']);
+  // Autonomous, so the template gate is what has to do the work here — the
+  // auto-only default would otherwise be enough on its own to explain a
+  // request with no reasoning_content.
+  const out = await cli(stub, ['--auto', 'look around']);
   stub.close();
 
   assert.match(out.stdout, /STUB_OK/);
@@ -333,7 +409,8 @@ test('--no-think leaves nothing to replay', async () => {
       { text: 'STUB_OK' },
     ],
   });
-  const out = await cli(stub, ['--no-think', 'look around']);
+  // Autonomous, so --no-think is what has to do the work here — see above.
+  const out = await cli(stub, ['--auto', '--no-think', 'look around']);
   stub.close();
 
   assert.match(out.stdout, /STUB_OK/);
@@ -351,7 +428,7 @@ test('--no-think leaves nothing to replay', async () => {
 // still a real HTTP stub and still asserting on the recorded request bodies,
 // which is what the case is actually about.
 
-test('5. a second user prompt strips the previous task, and only the previous task', async () => {
+test('5. a second user prompt strips the previous task, and only the previous task (autonomous)', async () => {
   const stub = await startStub({
     turns: [
       { reasoning: 'FIRST_STEP_ONE', tool: ['list_dir', { path: '.' }] },
@@ -362,11 +439,13 @@ test('5. a second user prompt strips the previous task, and only the previous ta
     ],
   });
   const saved = { ...config };
+  // replayReasoning left unset: the boundary behaviour below has to come from
+  // the autonomous default (auto: true on both calls), not from an override.
   Object.assign(config, {
     baseUrl: stub.url,
     showThinking: false,
     templatePreservesThinking: true,
-    replayReasoning: true,
+    replayReasoning: undefined,
     noThink: false,
   });
 
@@ -375,9 +454,9 @@ test('5. a second user prompt strips the previous task, and only the previous ta
     { role: 'user', content: 'first task' },
   ];
   try {
-    await runTurn({ messages, model: MODEL, approve: async () => true });
+    await runTurn({ messages, model: MODEL, approve: async () => true, auto: true });
     messages.push({ role: 'user', content: 'second task' });
-    await runTurn({ messages, model: MODEL, approve: async () => true });
+    await runTurn({ messages, model: MODEL, approve: async () => true, auto: true });
   } finally {
     Object.assign(config, saved);
     stub.close();

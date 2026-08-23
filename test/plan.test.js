@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { config } from '../src/config.js';
 import { runTurn } from '../src/agent.js';
 import { TOOLS, NEEDS_APPROVAL, runTool } from '../src/tools.js';
-import { clearPlan, isReminder, plan, MAX_ITEMS } from '../src/plan.js';
+import { carryChecklist, clearPlan, isNudge, plan, MAX_ITEMS, REMINDER_TAG } from '../src/plan.js';
 import { startStub } from './fixtures/kronk-stub.js';
 
 const MODEL = 'stub/Model-Q4/AGENT';
@@ -43,7 +43,40 @@ async function turn({ turns = [], messages = start(), auto = false, maxSteps = I
   return { stub, messages, sent: stub.chat.map((b) => b.messages) };
 }
 
-const reminders = (msgs) => msgs.filter(isReminder);
+const nudges = (msgs) => msgs.filter(isNudge);
+
+/** A snapshot to compare against, taken before a call that must change nothing. */
+const clone = (msgs) => JSON.parse(JSON.stringify(msgs));
+
+/** How many times the checklist tag appears in one message's content. */
+const tags = (m) => String(m.content ?? '').split(REMINDER_TAG).length - 1;
+
+/** The tool results carrying a checklist snapshot. */
+const snapshots = (msgs) => msgs.filter((m) => m.role === 'tool' && tags(m) > 0);
+
+/**
+ * THE invariant: every request is the one before it plus new messages on the end.
+ *
+ * Kronk's prompt cache keeps the longest common prefix of the rendered prompt
+ * and re-prefills everything after the first difference. Removing, reordering
+ * or editing a message that has already been sent therefore throws away the
+ * whole tail of the cache — which is exactly what carrying the checklist as a
+ * message that was spliced out and re-pushed each round used to do. Growing
+ * the list only at the end costs a re-prefill of the new messages and nothing
+ * else. Deep equality, so an in-place edit of an old message fails here too.
+ */
+function assertPrefixExtension(sent, where) {
+  for (let n = 1; n < sent.length; n += 1) {
+    const before = sent[n - 1];
+    const after = sent[n];
+    assert.ok(after.length >= before.length,
+      `${where}: request ${n + 1} has ${after.length} messages, fewer than request ${n}'s ${before.length}`);
+    for (let i = 0; i < before.length; i += 1) {
+      assert.deepEqual(after[i], before[i],
+        `${where}: request ${n + 1} changed message ${i}, so the cache is lost from there on`);
+    }
+  }
+}
 
 /**
  * Walk a request body: an assistant message carrying tool_calls must be
@@ -130,8 +163,8 @@ test('a plan is never distilled, however long it is', async () => {
   assert.equal(sent.length, 2, 'one planning round and the reply — a distill pass would add a third');
 });
 
-// 4
-test('exactly one reminder per round, after the tool results, gone when the plan is done', async () => {
+// 4 — the regression this file exists for.
+test('the checklist rides on the last tool result, and no request ever edits an earlier one', async () => {
   const half = OPEN.map((i, n) => ({ ...i, status: n === 0 ? 'done' : 'todo' }));
   const { sent } = await turn({
     turns: [
@@ -146,53 +179,109 @@ test('exactly one reminder per round, after the tool results, gone when the plan
   });
 
   assert.equal(sent.length, 7, 'six scripted rounds and the closing reply');
-  assert.equal(reminders(sent[0]).length, 0, 'nothing to remind anyone of before the first set_plan');
+  assertPrefixExtension(sent, 'six rounds with a plan');
 
   for (const [n, msgs] of sent.entries()) {
     assertToolPairing(msgs, `round ${n + 1}`);
     assertNoAdjacentUsers(msgs, `round ${n + 1}`);
+    assert.equal(nudges(msgs).length, 0, `round ${n + 1}: the checklist is not a message of its own`);
   }
+
+  assert.equal(snapshots(sent[0]).length, 0, 'nothing to say before the first set_plan');
 
   for (const n of [1, 2, 3, 4, 5]) {
-    assert.equal(reminders(sent[n]).length, 1, `round ${n + 1} carried ${reminders(sent[n]).length} reminders`);
     const last = sent[n].at(-1);
-    assert.ok(isReminder(last), `round ${n + 1}: the reminder is not last`);
-    assert.equal(sent[n].at(-2).role, 'tool', `round ${n + 1}: the reminder is not after the tool results`);
-    assert.match(last.content, /write the three docs/, 'open items are quoted verbatim');
+    assert.equal(last.role, 'tool', `round ${n + 1}: the round did not end on a tool result`);
+    assert.equal(tags(last), 1, `round ${n + 1}: the snapshot was appended ${tags(last)} times`);
+    const [, checklist] = last.content.split(`\n\n${REMINDER_TAG}`);
+    assert.ok(checklist, `round ${n + 1}: the snapshot is not at the end of the tool result`);
+    assert.match(checklist, /write the three docs/, 'open items are quoted verbatim');
     // Round 2 still carries the plan as first written; from round 3 the first
     // item has been marked done and must have dropped out of the open list.
-    assert.match(last.content, n === 1 ? /0\/3 items done/ : /1\/3 items done/);
-    if (n > 1) assert.doesNotMatch(last.content, /keep the push trigger/, 'a finished item is still listed as open');
+    assert.match(checklist, n === 1 ? /0\/3 items done/ : /1\/3 items done/);
+    if (n > 1) assert.doesNotMatch(checklist, /keep the push trigger/, 'a finished item is still listed as open');
+
+    // Exactly one snapshot per round, and every earlier one still there,
+    // untouched: they are history, and rewriting history is the bug.
+    assert.equal(snapshots(sent[n]).length, n, `round ${n + 1} carried ${snapshots(sent[n]).length} snapshots`);
   }
 
-  assert.equal(reminders(sent[6]).length, 0, 'the reminder goes once every item is done');
+  assert.equal(tags(sent[6].at(-1)), 0, 'nothing is appended once every item is done');
+  assert.equal(snapshots(sent[6]).length, 5, 'and the five older snapshots stay exactly as they were sent');
 });
 
 // 5
-test('the plan survives compaction and the reminder is re-injected after it', async () => {
+test('the snapshot is appended once per round, never twice to the same tool result', async () => {
+  clearPlan();
+  await runTool('set_plan', { items: OPEN });
+  const messages = [...start(), { role: 'tool', tool_call_id: 'x', content: 'a result' }];
+
+  carryChecklist(messages);
+  carryChecklist(messages);
+  carryChecklist(messages);
+
+  assert.equal(messages.length, 3, 'nothing may be pushed');
+  assert.equal(tags(messages.at(-1)), 1, 'the guard let a second copy through');
+  assert.match(messages.at(-1).content, /^a result\n\nCHECKLIST — /);
+});
+
+// 6
+test('a round with no tool result appends nothing and does not throw', async () => {
+  clearPlan();
+  await runTool('set_plan', { items: OPEN });
+
+  // What the transcript looks like straight after compaction: a summary and an
+  // acknowledgement, no tool block anywhere.
+  const compacted = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: '[context compacted — summary of the work so far]' },
+    { role: 'assistant', content: 'Understood. Continuing from there.' },
+  ];
+  const before = clone(compacted);
+  carryChecklist(compacted);
+  assert.deepEqual(compacted, before, 'nothing to append to means nothing happens');
+
+  // A tool result from an earlier round is not the tail, and reaching back to
+  // it would be the in-place edit that costs the cache.
+  const older = [
+    { role: 'tool', tool_call_id: 'x', content: 'an old result' },
+    { role: 'assistant', content: 'still working' },
+  ];
+  const oldBefore = clone(older);
+  carryChecklist(older);
+  assert.deepEqual(older, oldBefore, 'a tool result already sent must never be rewritten');
+});
+
+// 7
+test('the plan survives compaction and the next tool result carries it again', async () => {
   const { sent, messages } = await turn({
     turns: [
       opener,
       { status: 400, message: 'prompt exceeds context window (4096)' },
       { text: 'a summary of the work so far' },   // the compaction pass
+      { calls: [{ name: 'list_dir', args: { path: '.' } }] },
       { text: 'carrying on' },
     ],
   });
 
-  assert.equal(sent.length, 4);
-  assert.equal(reminders(sent[1]).length, 1, 'the overflowing request carried the reminder');
+  assert.equal(sent.length, 5);
+  assert.equal(snapshots(sent[1]).length, 1, 'the overflowing request carried the checklist');
   assert.deepEqual(plan().map((i) => i.text), OPEN.map((i) => i.text),
     'module state, so compaction cannot reach it');
 
-  const after = sent[3];
-  assert.ok(!after.some((m) => m.content === 'do the whole ticket'),
+  const resumed = sent[3];
+  assert.ok(!resumed.some((m) => m.content === 'do the whole ticket'),
     'compaction really did replace the transcript');
-  assert.equal(reminders(after).length, 1, 'and the reminder came back');
-  assert.ok(isReminder(after.at(-1)));
-  assert.equal(reminders(messages).length, 0, 'nothing left dangling once the turn returns');
+  assert.equal(snapshots(resumed).length, 0, 'the summary is not a tool result, so it carries nothing');
+
+  // Compaction is the one place the prefix is rewritten, deliberately and
+  // once. Everything after it must extend again.
+  assertPrefixExtension(sent.slice(3), 'after compaction');
+  assert.equal(tags(sent[4].at(-1)), 1, 'the first tool result after compaction carries the plan again');
+  assert.equal(messages.at(-1).content, 'carrying on');
 });
 
-// 6
+// 8
 test('autonomously, a premature summary is handed back — twice, then it stops', async () => {
   const { sent, messages } = await turn({
     auto: true,
@@ -200,21 +289,26 @@ test('autonomously, a premature summary is handed back — twice, then it stops'
   });
 
   assert.equal(sent.length, 4, 'one planning round plus three replies, two of them nudged');
+  assertPrefixExtension(sent, 'two nudges');
+
   for (const [n, msgs] of sent.entries()) {
     assertToolPairing(msgs, `round ${n + 1}`);
     assertNoAdjacentUsers(msgs, `round ${n + 1}`);
-    assert.ok(reminders(msgs).length <= 1, `round ${n + 1} carried two reminders`);
   }
   for (const n of [2, 3]) {
-    assert.match(sent[n].at(-1).content, /stopped with work outstanding/, `round ${n + 1} was not nudged`);
+    const last = sent[n].at(-1);
+    assert.equal(last.role, 'user', `round ${n + 1}: the nudge is not a user message at the tail`);
+    assert.match(last.content, /stopped with work outstanding/, `round ${n + 1} was not nudged`);
     assert.equal(sent[n].at(-2).content, n === 2 ? 'done!' : 'really, done!',
-      'the nudge replaced the previous reminder rather than joining it');
+      'the nudge went on the end, after the reply it answers');
+    assert.equal(nudges(sent[n]).length, n - 1, `round ${n + 1} carried ${nudges(sent[n]).length} nudges`);
   }
+
   assert.equal(messages.at(-1).content, 'done, honestly', 'the third reply is accepted');
-  assert.equal(reminders(messages).length, 0);
+  assert.equal(nudges(messages).length, 2, 'both nudges are still there — ending a turn removes nothing');
 });
 
-// 7
+// 9
 test('the step cap still wins over the nudge', async () => {
   const { sent, messages } = await turn({
     auto: true,
@@ -223,39 +317,42 @@ test('the step cap still wins over the nudge', async () => {
   });
 
   assert.equal(sent.length, 3, '--steps 3 means three requests, nudges or not');
+  assertPrefixExtension(sent, 'step cap');
   assert.equal(messages.at(-1).content, '(stopped: step cap reached)');
-  assert.equal(reminders(messages).length, 0);
+  assert.equal(messages.at(-1).role, 'assistant', 'a turn never ends on a user message');
 });
 
-// 8
+// 10
 test('outside autonomous mode a no-tool-call reply ends the turn at once', async () => {
   const { sent, messages } = await turn({
     turns: [opener, { text: 'done!' }, { text: 'this must never be asked for' }],
   });
 
   assert.equal(sent.length, 2, 'the same script that nudged twice must not nudge at all here');
+  assert.equal(nudges(messages).length, 0, 'nothing is nudged when someone is watching');
   assert.equal(messages.at(-1).content, 'done!');
 });
 
-// 9
+// 11
 test('with no plan the turn runs exactly as it did before', async () => {
   const { sent, messages } = await turn({
     turns: [{ calls: [{ name: 'list_dir', args: { path: '.' } }] }, { text: 'there you go' }],
   });
 
   assert.equal(sent.length, 2);
-  for (const msgs of sent) assert.equal(msgs.filter(isReminder).length, 0);
+  assertPrefixExtension(sent, 'no plan');
+  for (const msgs of sent) assert.equal(snapshots(msgs).length + nudges(msgs).length, 0);
   assert.deepEqual(messages.map((m) => m.role),
     ['system', 'user', 'assistant', 'tool', 'assistant']);
   assert.equal(messages.at(-1).content, 'there you go');
 });
 
-// 10
+// 12
 test('a plan does not leak into the next turn', async () => {
   await turn({ turns: [opener, { text: 'stopping here' }] });
   assert.equal(plan().length, 3, 'the plan outlives the turn that made it');
 
   const { sent } = await turn({ turns: [{ text: 'a different question entirely' }] });
   assert.equal(plan().length, 0, 'runTurn starts every turn with a clean sheet');
-  assert.equal(reminders(sent[0]).length, 0);
+  assert.equal(snapshots(sent[0]).length, 0);
 });

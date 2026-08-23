@@ -5,7 +5,7 @@ import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
 import {
-  clearPlan, dropReminder, openItems, outstandingLines, planLines, syncReminder,
+  carryChecklist, clearPlan, openItems, outstandingLines, planLines, pushNudge,
 } from './plan.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
@@ -43,14 +43,13 @@ async function compactInto(messages, model, signal) {
 const MAX_NUDGES = 2;
 
 /**
- * Leave the transcript fit to be continued, and say what was not finished.
+ * Say what was not finished, and hand the transcript back fit to be continued.
  *
- * The reminder goes on every exit: it is a `user` message, so leaving it as the
- * last one would put it directly before the next typed prompt, and two
- * adjacent user messages are what chat templates merge or reject.
+ * Nothing is taken out of it on the way. A turn always ends on an assistant
+ * message — the reply, or the step-cap note — so a nudge is never left sitting
+ * directly before the next typed prompt.
  */
 function endTurn(messages) {
-  dropReminder(messages);
   outstandingLines().forEach((l) => console.log(l));
   return messages;
 }
@@ -71,10 +70,11 @@ export async function runTurn({
   let compacted = false;
   let nudges = 0;
 
-  // A plan belongs to one task. Clearing here also drops a reminder stranded by
-  // a turn that was interrupted rather than returned from.
+  // A plan belongs to one task, not to a session. Only the store is cleared:
+  // a checklist the previous turn left in the transcript is history, it is
+  // already in the prompt prefix, and rewriting history is what evicts the
+  // prompt cache — see `carryChecklist`.
   clearPlan();
-  dropReminder(messages);
 
   for (;;) {
     step += 1;
@@ -126,11 +126,12 @@ export async function runTurn({
       if (isOverflow(e) && !compacted) {
         compacted = true;
         console.log(c.yellow('\n  context full — compacting and retrying'));
-        // Compaction has just thrown the reminder away with everything else,
-        // and this path retries without ever reaching the end of a round, so
-        // put it back before the request goes out again.
+        // The plan itself is module state, so compaction cannot reach it. The
+        // snapshot it just summarised away is not put back: there is no tool
+        // result left to carry one, and inserting a message here would be the
+        // rewrite `carryChecklist` exists to avoid. The next round's tool
+        // results carry the plan again.
         if (await compactInto(messages, model, signal)) {
-          syncReminder(messages);
           step -= 1;
           continue;
         }
@@ -172,7 +173,7 @@ export async function runTurn({
       // reporting what is left.
       if (auto && openItems().length && nudges < MAX_NUDGES) {
         nudges += 1;
-        syncReminder(messages, { nudge: true });
+        pushNudge(messages);
         console.log(c.yellow(`  ⚠ ${openItems().length} checklist items still open — continuing`));
         continue;
       }
@@ -246,9 +247,9 @@ export async function runTurn({
       messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     }
 
-    // After the last tool result, never between one and the assistant message
-    // that asked for it.
-    syncReminder(messages);
+    // On the last tool result rather than in a message of its own, so the
+    // round only ever adds to the prompt. Nothing already sent is touched.
+    carryChecklist(messages);
     // loop: the model now sees the tool output
   }
 }

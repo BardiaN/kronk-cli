@@ -44,6 +44,7 @@ if (args.help) {
         --no-think      disable the model's reasoning pass (faster)
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
+        --              end option parsing; everything after is the prompt
 
   ENVIRONMENT
     KRONK_URL           default http://localhost:11435/v1

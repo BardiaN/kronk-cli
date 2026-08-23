@@ -8,6 +8,7 @@ import { pickDefault, ensureLoaded } from './boot.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
 import { projectContext } from './context.js';
+import { forRequest } from './reasoning.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
@@ -486,7 +487,11 @@ async function main() {
       continue;
     }
     if (input === '/context') {
-      const used = await tokenize(config.model, messages.map((m) => m.content ?? '').join('\n'));
+      // Count what the next request would actually carry, replayed reasoning
+      // included — the history holds reasoning that is never sent, and a meter
+      // that charged for it would read high for the whole session.
+      const used = await tokenize(config.model, forRequest(messages)
+        .map((m) => `${m.reasoning_content ?? ''}${m.content ?? ''}`).join('\n'));
       console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
       console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`
         + (config.nativeContext ? ` · model supports up to ${config.nativeContext.toLocaleString()}` : '')));

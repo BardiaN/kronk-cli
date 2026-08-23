@@ -1,6 +1,7 @@
 import { streamChat } from './client.js';
 import { TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval } from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
+import { forRequest } from './reasoning.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
@@ -29,6 +30,15 @@ You are running autonomously on a whole task. Finish it before you stop.
 - Do not reply with a summary while any item is not done. If an item cannot be completed, say in your reply why it was not possible, and only then mark it done — never silently.
 - Before the final reply, re-read the original request and check every item against it.
 - When every item is genuinely done, reply with a short summary of what you changed.`;
+
+/**
+ * The reasoning half of an assistant message, or nothing at all.
+ *
+ * A model that emitted no reasoning — `--no-think`, or a non-reasoning model —
+ * must produce exactly the message this agent has always produced, so the key
+ * is absent rather than empty.
+ */
+const thought = (reasoning) => (reasoning ? { reasoning_content: reasoning } : {});
 
 /** Compact in place, preserving the caller's array identity. */
 async function compactInto(messages, model, signal) {
@@ -86,18 +96,29 @@ export async function runTurn({
     }
     let sp = spinner('thinking');
     let text = '';
+    let reasoning = '';
     let calls = [];
     let wroteAnything = false;
     let inReasoning = false;
 
     try {
       for await (const ev of streamChat({
-        model, messages, tools, signal, maxTokens: config.maxTokens, noThink: config.noThink,
+        model,
+        // The history keeps every step's reasoning; only the current task's
+        // share of it goes on the wire. See src/reasoning.js.
+        messages: forRequest(messages),
+        tools,
+        signal,
+        maxTokens: config.maxTokens,
+        noThink: config.noThink,
         // Re-read every step: this has to hold for the tool-loop follow-ups too,
         // and `/think` can flip the answer between one turn and the next.
         preserveThinking: shouldPreserveThinking(),
       })) {
         if (ev.type === 'reasoning') {
+          // Accumulated before the display check: whether the user watches the
+          // model think has nothing to do with whether the model gets it back.
+          reasoning += ev.value;
           if (!config.showThinking) continue;
           if (sp) { sp.stop(); sp = null; }
           if (!inReasoning) { process.stdout.write(c.grey('\n  ┄ thinking ┄\n  ')); inReasoning = true; }
@@ -162,9 +183,9 @@ export async function runTurn({
         // Reasoning models sometimes spend the whole budget thinking and emit no
         // answer. Say so rather than returning silence.
         console.log(c.yellow('  (model produced no answer — raise KRONK_MAX_TOKENS or /thinking off)'));
-        messages.push({ role: 'assistant', content: '(no answer produced)' });
+        messages.push({ role: 'assistant', content: '(no answer produced)', ...thought(reasoning) });
       } else {
-        messages.push({ role: 'assistant', content: text });
+        messages.push({ role: 'assistant', content: text, ...thought(reasoning) });
       }
 
       // A plan with open items means it stopped early. Hand the list back and
@@ -183,6 +204,7 @@ export async function runTurn({
     messages.push({
       role: 'assistant',
       content: text,
+      ...thought(reasoning),
       tool_calls: calls.map((t) => ({
         id: t.id, type: 'function',
         function: { name: t.name, arguments: t.args || '{}' },

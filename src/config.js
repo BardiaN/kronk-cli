@@ -29,6 +29,12 @@ export const config = {
   // Pinning them costs the tokens the blocks occupy and saves the re-prefill.
   preserveThinking:
     (process.env.KRONK_PRESERVE_THINKING ?? String(file.preserveThinking ?? 'true')) !== 'false',
+  // Send the current task's own reasoning back with each tool-loop step, so
+  // the model does not re-derive its plan from tool output alone every time.
+  // Earlier turns are dropped at the boundary the template already uses —
+  // src/reasoning.js has the full argument. Off is for a small window.
+  replayReasoning:
+    (process.env.KRONK_REPLAY_REASONING ?? String(file.replayReasoning ?? 'true')) !== 'false',
   // Kronk admits a model on its first inference request, not at server start.
   // Pay that cold load at boot rather than on the first typed prompt.
   warm: (process.env.KRONK_WARM ?? String(file.warm ?? 'true')) !== 'false',

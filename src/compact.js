@@ -1,5 +1,6 @@
 import { streamChat, tokenize } from './client.js';
 import { config } from './config.js';
+import { forRequest } from './reasoning.js';
 import { c } from './ui.js';
 
 const PROMPT = `Summarize the conversation above so it can be continued in a fresh context.
@@ -35,7 +36,15 @@ function fit(text, budgetTokens) {
   };
 }
 
-/** Flatten a message list into something the model can read back. */
+/**
+ * Flatten a message list into something the model can read back.
+ *
+ * Reasoning is flattened alongside content rather than skipped — the summary
+ * is the only thing that survives, so anything left out here is lost for good.
+ * The caller passes the list as it goes on the wire, which means the reasoning
+ * a request had already dropped is not resurrected here just to be baked into
+ * the summary permanently.
+ */
 function transcript(messages) {
   return messages
     .filter((m) => m.role !== 'system')
@@ -44,7 +53,8 @@ function transcript(messages) {
       const calls = m.tool_calls?.length
         ? `\n[called ${m.tool_calls.map((t) => t.function.name).join(', ')}]`
         : '';
-      return `${m.role}: ${m.content ?? ''}${calls}`;
+      const thought = m.reasoning_content ? `[reasoning]\n${m.reasoning_content}\n` : '';
+      return `${m.role}: ${thought}${m.content ?? ''}${calls}`;
     })
     .join('\n\n');
 }
@@ -54,11 +64,14 @@ function transcript(messages) {
  *
  * Tool messages are dropped rather than carried over: they are only valid when
  * paired with the assistant tool_calls that produced them, and a partial carry
- * leaves orphaned tool_call_ids that the API rejects.
+ * leaves orphaned tool_call_ids that the API rejects. Reasoning goes the same
+ * way for the same reason — it belongs to a tool loop that no longer exists
+ * after this — and the replacement below is built literally, so a compacted
+ * history cannot carry a `reasoning_content` from before the summary.
  */
 export async function compact(messages, { model, signal } = {}) {
   const system = messages[0];
-  const raw = transcript(messages);
+  const raw = transcript(forRequest(messages));
   if (!raw.trim()) return { messages, before: 0, after: 0 };
 
   const before = await tokenize(model, [system.content, raw].join('\n'));

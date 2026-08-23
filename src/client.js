@@ -15,17 +15,69 @@ export async function listModels() {
   return data.map((m) => m.id);
 }
 
+// Which model-metadata key names each sampling parameter, and how the same
+// value is spelled in `model_config['sampling-parameters']` once the profile
+// has been applied.
+const SAMPLING_KEYS = [
+  { meta: 'general.sampling.temp', effective: 'temperature', label: 'temperature' },
+  { meta: 'general.sampling.top_k', effective: 'top_k', label: 'top_k' },
+  { meta: 'general.sampling.top_p', effective: 'top_p', label: 'top_p' },
+];
+
+// Metadata travels GGUF -> YAML -> JSON before it reaches here, and that chain
+// can land a value a few float64 ULPs from where it started — observed on this
+// exact pair: Number('0.95') and 0.9500001 differ by ~1.0e-7. The 1e-9 anchor
+// suggested for this feature is tighter than that observed noise and would
+// misfire on the very case it exists to swallow, so the tolerance here is
+// 1e-6: an order of magnitude above the measured round-trip noise, and still
+// four-plus orders of magnitude below the smallest override a person would
+// plausibly type (e.g. 0.6 vs 1).
+const SAMPLING_TOLERANCE = 1e-6;
+
 /**
- * Effective context window for a model id, the model's native maximum, and
- * whether its chat template understands `preserve_thinking`.
+ * Compare a model's own sampling metadata (GGUF values, always strings) against
+ * the effective sampling-parameters Kronk is actually applying (profile-merged,
+ * always numbers). Pure — no I/O — so this is the whole testable surface for
+ * the startup warning: the boot path just hands it what `/kronk/models/{id}`
+ * already returned.
+ *
+ * A side that is missing, or does not parse to a finite number, is "no
+ * opinion" rather than a difference — a model with no sampling metadata, or a
+ * profile field this build doesn't recognise, must never produce a warning.
+ *
+ * Returns null when there is nothing to report, or the list of parameters
+ * that disagree — each with the model's own value and the effective one —
+ * for the caller to render as a single line.
+ */
+export function samplingOverride(metadata, sampling) {
+  if (!metadata || !sampling) return null;
+  const diffs = [];
+  for (const { meta, effective, label } of SAMPLING_KEYS) {
+    const modelValue = Number(metadata[meta]);
+    const effectiveValue = Number(sampling[effective]);
+    if (!Number.isFinite(modelValue) || !Number.isFinite(effectiveValue)) continue;
+    if (Math.abs(modelValue - effectiveValue) > SAMPLING_TOLERANCE) {
+      diffs.push({ param: label, model: modelValue, effective: effectiveValue });
+    }
+  }
+  return diffs.length ? diffs : null;
+}
+
+/**
+ * Effective context window for a model id, the model's native maximum,
+ * whether its chat template understands `preserve_thinking`, and whether the
+ * profile is overriding the model's own sampling values.
  * The id contains slashes, so it must be percent-encoded — Kronk's route takes
  * one path segment and 404s on a raw id.
  *
- * The template is the only reliable source for the last one: Kronk reports
- * `model_config["chat-template-kwargs"]` as null even when the profile sets the
- * flag, so what the server is already doing cannot be read back.
+ * The template is the only reliable source for `preserveThinking`: Kronk
+ * reports `model_config["chat-template-kwargs"]` as null even when the
+ * profile sets the flag, so what the server is already doing cannot be read
+ * back. The sampling comparison has no such gap — metadata and the effective
+ * values are both in this same response — so it needs no second request.
  *
- * Every failure answers "unknown", which the caller reads as "do not send it".
+ * Every failure answers "unknown" / "no warning", which the caller reads as
+ * "say nothing and proceed".
  */
 export async function modelLimits(id) {
   try {
@@ -35,8 +87,15 @@ export async function modelLimits(id) {
     const native = nativeKey ? Number(d.metadata[nativeKey]) : null;
     const template = d.metadata?.['tokenizer.chat_template'];
     const preserveThinking = typeof template === 'string' && template.includes('preserve_thinking');
-    return { configured, native, preserveThinking };
-  } catch { return { configured: null, native: null, preserveThinking: false }; }
+    const samplingDiff = samplingOverride(d.metadata, d.model_config?.['sampling-parameters']);
+    return {
+      configured, native, preserveThinking, samplingDiff,
+    };
+  } catch {
+    return {
+      configured: null, native: null, preserveThinking: false, samplingDiff: null,
+    };
+  }
 }
 
 /** Native Kronk model list: size, projector, validation. */

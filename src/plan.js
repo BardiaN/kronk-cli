@@ -6,8 +6,9 @@ import { c } from './ui.js';
  * Module state rather than a message, because `compactInto` splices the whole
  * transcript when the window fills — a plan that lived only in `messages`
  * would be summarised away on exactly the long runs that need it. What the
- * model sees each round is a reminder *message*, which is expendable: it is
- * rebuilt from here whenever it is missing.
+ * model sees each round is a snapshot of this store, appended to the tool
+ * result that round produced; see `carryChecklist` for why it is appended and
+ * never moved.
  */
 
 /** Long enough for any real ticket; short enough that a runaway list is caught. */
@@ -15,10 +16,7 @@ export const MAX_ITEMS = 40;
 
 const STATUSES = ['todo', 'doing', 'done'];
 
-/**
- * Every reminder message starts with this, so the one already in `messages`
- * can be found and replaced instead of a second copy being appended.
- */
+/** Every checklist snapshot and every nudge opens with this, so both are greppable. */
 export const REMINDER_TAG = 'CHECKLIST —';
 
 let items = [];
@@ -87,11 +85,19 @@ export function outstandingLines() {
 const tally = () => `${items.length - openItems().length}/${items.length} items done`;
 const openLines = () => openItems().map((i) => `- [${i.status}] ${i.text}`);
 
-function reminderText() {
+/**
+ * The snapshot appended to a round's last tool result.
+ *
+ * Phrased as a point in time on purpose: earlier rounds keep the snapshot they
+ * were given, so several sit in the history at once and only the last one is
+ * current. Saying so is what stops a stale one being read as the truth.
+ */
+function snapshotText() {
   return [
-    `${REMINDER_TAG} ${tally()}. Still open:`,
+    `${REMINDER_TAG} where the plan stands at this step. ${tally()}. Still open:`,
     ...openLines(),
-    'Keep working through them, and record each one with set_plan as it is finished.',
+    'An earlier snapshot above is out of date — this is the current one.',
+    'Keep working through the open items, and record each one with set_plan as it is finished.',
   ].join('\n');
 }
 
@@ -104,31 +110,58 @@ function nudgeText() {
   ].join('\n');
 }
 
-export const isReminder = (m) =>
+/** A nudge is the only checklist text that is a message of its own. */
+export const isNudge = (m) =>
   m?.role === 'user' && typeof m.content === 'string' && m.content.startsWith(REMINDER_TAG);
 
-/** Remove the reminder wherever it sits. Safe to call when there is none. */
-export function dropReminder(messages) {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (isReminder(messages[i])) messages.splice(i, 1);
-  }
+/** Tool results already carrying a snapshot, held by identity. */
+const carried = new WeakSet();
+
+/**
+ * Append the checklist to the last tool result of the round that just ran.
+ *
+ * Append-only, and that is the entire point. This used to be a `user` message
+ * of its own, spliced out of the middle of `messages` and re-pushed at the end
+ * every round. Removing a message changes the rendered prompt from that point
+ * on, and Kronk's incremental prompt cache cannot recover past the change: it
+ * keeps the longest common prefix and re-prefills the rest. Measured over four
+ * rounds against Kronk 1.31.9 with preserve_thinking on, moving the message
+ * gave cached 0 / 607 / 607 / 607 with re-prefill 724 / 193 / 269 / 345 —
+ * pinned at the first reminder and growing without bound — where appending
+ * gives cached 607 / 715 / 814 / 913 with re-prefill 113 / 104 / 104 / 104.
+ * In the field that was a median 14.3s to first token against 0.5s.
+ *
+ * So: never remove or move anything already in `messages`. Only append. A tool
+ * result created this round has not been sent yet, so growing it extends the
+ * prefix instead of rewriting it, and it is still the last thing the model
+ * reads. Older rounds keep their own snapshot; going back to strip them is the
+ * very edit that costs the cache.
+ */
+export function carryChecklist(messages) {
+  if (!openItems().length) return;
+
+  // The tail only. A `role: 'tool'` message further back belongs to a round
+  // that has already gone out, and editing that is the eviction described
+  // above. A round that produced no tool result has nowhere to put this.
+  const last = messages.at(-1);
+  if (last?.role !== 'tool') return;
+
+  // Identity, not a search for the tag in the text: a tool result can hold the
+  // tag legitimately — a grep of this file does — and appending twice to one
+  // message is a bug, not a second snapshot.
+  if (carried.has(last)) return;
+  carried.add(last);
+  last.content = `${last.content}\n\n${snapshotText()}`;
 }
 
 /**
- * Leave exactly one reminder, at the end of the round.
+ * Hand the open items back as a `user` message when the model stops early.
  *
- * The end is *after* the last `role: 'tool'` message, which is the only place
- * it can go: an assistant message carrying `tool_calls` and its tool replies
- * have to stay adjacent, or an OpenAI-compatible server rejects the request
- * and a Qwen-family chat template renders nonsense. The tail gives the same
- * recency with no ordering violation.
- *
- * Removed and re-pushed rather than edited in place, so the array can never
- * accumulate copies however many rounds run. `role: 'user'` because a local
- * model weights a second `system` message unpredictably.
+ * This one stays a message, because a new message on the end is exactly what
+ * the cache tolerates: everything before it is untouched. It is pushed and
+ * never removed again.
  */
-export function syncReminder(messages, { nudge = false } = {}) {
-  dropReminder(messages);
+export function pushNudge(messages) {
   if (!openItems().length) return;
-  messages.push({ role: 'user', content: nudge ? nudgeText() : reminderText() });
+  messages.push({ role: 'user', content: nudgeText() });
 }

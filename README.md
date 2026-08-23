@@ -1086,10 +1086,13 @@ dozen, wrote a confident summary, and stopped. The autonomous prompt now tells i
 `set_plan` before its first edit, with one item per acceptance criterion, and to update the list
 as it goes. The harness holds that list and does two things with it:
 
-- **Re-states it every round.** One reminder message — the open items, verbatim, and how many of
-  how many are done — is kept at the end of the conversation and replaced in place, so the
-  original request is never thousands of tokens behind. It is held outside the message list as
-  well, so [compaction](#compaction) cannot summarise it away.
+- **Re-states it every round.** The open items, verbatim, and how many of how many are done, are
+  appended to the last tool result of the round that has just run — so the original request is
+  never thousands of tokens behind. Appended, never moved: the conversation only ever grows at
+  the end, which is what keeps Kronk's prompt cache alive across a long run. Earlier rounds keep
+  the snapshot they were given, and each one says it is a point in time; the last is the current
+  one. The list is held outside the message list as well, so [compaction](#compaction) cannot
+  summarise it away.
 - **Declines the first premature "done".** A reply with no tool calls, while items are still
   open, gets the open list handed back instead of ending the run. Twice at most: after that the
   turn ends and the unfinished items are printed in yellow. `--steps` still wins, and `Ctrl-C`
@@ -1135,7 +1138,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/tools.js` | tool definitions, sandbox, shell session |
 | `src/context.js` | startup scan: git, layout, `AGENTS.md` |
 | `src/compact.js` | summarizing the conversation when the window fills |
-| `src/plan.js` | the task checklist and the reminder the model sees |
+| `src/plan.js` | the task checklist and the snapshot the model sees |
 | `src/mcp.js` | MCP client: stdio + HTTP transports, tool routing |
 | `src/distill.js` | summarizing large tool output in a throwaway context |
 | `src/config.js` | precedence of flags, env, config file |

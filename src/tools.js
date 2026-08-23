@@ -139,14 +139,35 @@ export function describe(name, args) {
   }
 }
 
-/** Strip the cwd marker off command output and record where we ended up. */
+/**
+ * Strip the cwd marker off command output and report where we ended up.
+ *
+ * A command that walks out of the launch root does not move the session, but
+ * the caller still has to say where it ran: reporting `session.cwd` for a
+ * command that ran somewhere else handed the model a flat contradiction —
+ * "you are in the project" next to "this is not a git repository" — and it
+ * resolved it by going looking for the project elsewhere.
+ *
+ * `pwd` is null when the marker never printed, which is what `exec` does.
+ */
 function applyCwd(out, mark) {
   const i = out.lastIndexOf(mark);
-  if (i === -1) return out;
+  if (i === -1) return { body: out, pwd: null, escaped: false };
+  const body = out.slice(0, i).replace(/\n$/, '');
   const next = real(out.slice(i + mark.length).trim());
-  const rel = relative(real(session.root), next);
-  if (next && !rel.startsWith('..')) session.cwd = next;
-  return out.slice(0, i).replace(/\n$/, '');
+  if (!next) return { body, pwd: null, escaped: false };
+  const escaped = relative(real(session.root), next).startsWith('..');
+  if (!escaped) session.cwd = next;
+  return { body, pwd: next, escaped };
+}
+
+/** The directory a command ran in, and a warning when that was outside the root. */
+function whereLines(pwd, escaped) {
+  const ran = pwd ? `ran in: ${pwd}` : `ran in: ${session.cwd} (final directory unknown)`;
+  if (!escaped) return [ran];
+  return [ran, `note: this command left the launch root ${session.root} and the session `
+    + 'directory is unchanged. Work inside the root; paths above it are outside this '
+    + "agent's scope."];
 }
 
 const MARK = '__KRONK_CWD__';
@@ -214,10 +235,13 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
     // Own process group: killing bash alone leaves its children running and
     // holding the stdout pipe open, so `close` would not fire until they
     // finished anyway — a 5s timeout that returned after 30s.
-    // Capture the real status BEFORE the marker runs, then exit with it.
-    // Appending `printf` naively made every command look successful, so
-    // failures never reached the agent at all.
-    const script = `${cmd}\n__kronk_st=$?\nprintf '\\n${MARK}%s' "$(pwd)"\nexit $__kronk_st`;
+    // Print the marker from an EXIT trap rather than appending it after the
+    // command. A command ending in `exit 1` never reaches an appended line, so
+    // the shell's final directory was unobservable for exactly the failures
+    // that most need reporting. The trap fires whatever route the shell takes
+    // out, and bash exits with the status in effect when it ran — so, unlike an
+    // appended `printf`, it cannot make a failure look successful.
+    const script = `__kronk_mark() { printf '\\n${MARK}%s' "$(pwd)"; }\ntrap __kronk_mark EXIT\n${cmd}`;
 
     const backend = resolveSandbox();
     if (backend === 'none' && (process.env.KRONK_SANDBOX ?? 'auto') === 'strict') {
@@ -273,13 +297,17 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
 
     child.on('error', (e) => {
       clearTimeout(timer);
+      // `cwd:`, not `ran in:` — this fires before any output exists, so nothing
+      // ever ran and there is no final directory to report. Naming one would be
+      // a worse lie than the stale cwd this file otherwise stopped printing.
       resolve(`error: could not start command — ${e.message}\ncwd: ${session.cwd}`);
     });
 
     child.on('close', (code, signal) => {
       clearTimeout(timer);
       const secs = ((Date.now() - started) / 1000).toFixed(1);
-      const body = applyCwd(out, MARK);
+      const { body, pwd, escaped } = applyCwd(out, MARK);
+      const where = whereLines(pwd, escaped);
       const tail = [
         body.trim() && `stdout:\n${body.trim()}`,
         err.trim() && `stderr:\n${err.trim()}`,
@@ -289,19 +317,23 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
         return resolve(clip([
           `error: killed after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s).`,
           'The command may simply be slow — re-run a narrower scope, or raise KRONK_TOOL_TIMEOUT.',
-          `cwd: ${session.cwd}`,
+          ...where,
           tail || '(no output before it was killed)',
         ].join('\n')));
       }
       if (code === 0) {
         const okBody = clip(body + err);
-        return resolve(`${okBody.trim() || '(no output)'}${truncated ? '\n[earlier output dropped]' : ''}`);
+        const text = `${okBody.trim() || '(no output)'}${truncated ? '\n[earlier output dropped]' : ''}`;
+        // Prepended, and outside clip(): a command that succeeded on the way out
+        // of the root is exactly how a model talks itself into believing the
+        // project lives somewhere else, so the warning leads and cannot be elided.
+        return resolve(escaped ? `${where.join('\n')}\n${text}` : text);
       }
       return resolve(clip([
         signal
           ? `error: killed by ${signal} after ${secs}s`
           : `error: exit code ${code} after ${secs}s`,
-        `cwd: ${session.cwd}`,
+        ...where,
         tail || '(no output)',
         truncated ? '[earlier output dropped]' : '',
       ].filter(Boolean).join('\n')));

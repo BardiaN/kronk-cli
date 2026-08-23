@@ -68,7 +68,10 @@ test('child processes are only spawned by the tool layer', () => {
   const spawners = sources
     .filter(({ body }) => imports.test(body))
     .map(({ name }) => name);
-  assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'tools.js'].sort(),
+  // setup.js is on the list because `kronk-cli setup` drives the kronk binary —
+  // pull, server stop, server start — through one helper. Every other file that
+  // wants to run a command still has to be added here deliberately.
+  assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'setup.js', 'tools.js'].sort(),
     'a new file gained the ability to run commands');
 });
 

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,9 +19,16 @@ const OTHER = 'stub/Other-Q4/AGENT';
  * admission should refuse with, which is how a model too large to fit
  * announces itself. Every completion request is recorded so a test can prove
  * what the CLI asked for — and, just as usefully, what it did not.
+ *
+ * `template` is served as the model's chat template, `modelInfoStatus` breaks
+ * that route, and `turns` scripts the streamed replies one per request, so a
+ * test can drive a real multi-step tool loop instead of a single answer.
  */
-function startStub({ ids, resident = [], fail = {} } = {}) {
+function startStub({
+  ids, resident = [], fail = {}, template = null, modelInfoStatus = 200, turns = [],
+} = {}) {
   const chat = [];
+  let turn = 0;
   const send = (res, code, body) => {
     res.writeHead(code, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
@@ -37,9 +44,15 @@ function startStub({ ids, resident = [], fail = {} } = {}) {
       return send(res, 200, resident.map((id) => ({ id, status: 'loaded', vram_total: 1e9 })));
     }
     if (url.startsWith('/v1/kronk/models')) {
+      if (modelInfoStatus !== 200) {
+        return send(res, modelInfoStatus, { error: { message: 'model info unavailable' } });
+      }
       return send(res, 200, {
         model_config: { 'context-window': 4096 },
-        metadata: { 'stub.context_length': '8192' },
+        metadata: {
+          'stub.context_length': '8192',
+          ...(template ? { 'tokenizer.chat_template': template } : {}),
+        },
         data: [],
       });
     }
@@ -64,8 +77,21 @@ function startStub({ ids, resident = [], fail = {} } = {}) {
         const chunk = (delta, finish = null) => JSON.stringify({
           choices: [{ index: 0, delta, finish_reason: finish }],
         });
-        res.write(`data: ${chunk({ role: 'assistant', content: 'STUB_OK' })}\n`);
-        res.write(`data: ${chunk({}, 'stop')}\n`);
+        const script = turns[turn++] ?? { text: 'STUB_OK' };
+        if (script.tool) {
+          const [name, args] = script.tool;
+          res.write(`data: ${chunk({
+            role: 'assistant',
+            tool_calls: [{
+              index: 0, id: `call_${turn}`, type: 'function',
+              function: { name, arguments: JSON.stringify(args) },
+            }],
+          })}\n`);
+          res.write(`data: ${chunk({}, 'tool_calls')}\n`);
+        } else {
+          res.write(`data: ${chunk({ role: 'assistant', content: script.text })}\n`);
+          res.write(`data: ${chunk({}, 'stop')}\n`);
+        }
         res.write('data: [DONE]\n');
         res.end();
       });
@@ -168,11 +194,21 @@ test('every candidate is tried once, and a total failure is not fatal', async ()
   assert.deepEqual(new Set(tried), new Set([OTHER, DEFAULT_MODEL]));
 });
 
-/** Run the CLI itself against a stub, with a throwaway HOME so ~/.kronk-cli.json cannot interfere. */
-async function cli(stub, args) {
-  const env = { ...process.env, KRONK_URL: stub.url, HOME: mkdtempSync(join(tmpdir(), 'kronk-home-')), NO_COLOR: '1' };
+/**
+ * Run the CLI itself against a stub, with a throwaway HOME so ~/.kronk-cli.json
+ * cannot interfere — or, when `rc` is given, so it is the only thing that can.
+ */
+async function cli(stub, args, { env: extra = {}, rc = null } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'kronk-home-'));
+  if (rc) writeFileSync(join(home, '.kronk-cli.json'), JSON.stringify(rc));
+  // Inherited settings are cleared first, then `extra` applied, so a test can
+  // set one of them without the developer's own environment overriding it.
+  const env = { ...process.env, KRONK_URL: stub.url, HOME: home, NO_COLOR: '1' };
   delete env.KRONK_MODEL;
   delete env.KRONK_WARM;
+  delete env.KRONK_NO_THINK;
+  delete env.KRONK_PRESERVE_THINKING;
+  Object.assign(env, extra);
   // stdin must be closed, not merely idle: with an open pipe the CLI waits on
   // it for piped context and the test would hang instead of failing.
   return run(process.execPath, [CLI, '--no-context', ...args],
@@ -198,4 +234,109 @@ test('the CLI preloads before the first turn, and --no-warm skips it', async (t)
   assert.deepEqual(cold.chat.map((c) => Boolean(c.stream)), [true],
     'no warm-up: the first real turn pays the load');
   t.diagnostic(`with warm-up: ${warms.chat.length} requests, without: ${cold.chat.length}`);
+});
+
+// ---- preserve_thinking ------------------------------------------------
+//
+// The chat template renders an earlier assistant turn's <think> block only
+// while no newer user message exists — unless `preserve_thinking` pins it. The
+// agent has to send that on every request of a turn, or the prefix moves under
+// the server's cache the moment the user types again.
+
+/** The conditional the Qwen3.6 template guards its think blocks with. */
+const SUPPORTS = '{%- if (preserve_thinking is defined and preserve_thinking is true) %}';
+const NO_SUPPORT = '{%- for message in messages %}{{ message.content }}{%- endfor %}';
+
+/** The streamed turns only: the warm-up is a separate, deliberately bare request. */
+const turnsOf = (stub) => stub.chat.filter((b) => b.stream);
+const pinned = (b) => b.chat_template_kwargs?.preserve_thinking;
+
+test('a template that declares preserve_thinking gets it on every turn', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const turns = turnsOf(stub);
+  assert.equal(turns.length, 1);
+  for (const body of turns) assert.equal(pinned(body), true);
+
+  const [warmUp] = stub.chat.filter((b) => !b.stream);
+  assert.ok(warmUp, 'the warm-up still happens');
+  assert.ok(!('chat_template_kwargs' in warmUp),
+    'a throwaway one-token load has no thinking to preserve');
+});
+
+test('a template without preserve_thinking is not sent the field speculatively', async () => {
+  const stub = await startStub({ ids: [OTHER], template: NO_SUPPORT });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  for (const body of stub.chat) assert.ok(!('chat_template_kwargs' in body));
+});
+
+test('KRONK_PRESERVE_THINKING=false and the config-file key both suppress it', async () => {
+  const viaEnv = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const a = await cli(viaEnv, ['hello'], { env: { KRONK_PRESERVE_THINKING: 'false' } });
+  viaEnv.close();
+  assert.match(a.stdout, /STUB_OK/);
+  for (const body of viaEnv.chat) assert.ok(!('chat_template_kwargs' in body), 'env off');
+
+  const viaFile = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const b = await cli(viaFile, ['hello'], { rc: { preserveThinking: false } });
+  viaFile.close();
+  assert.match(b.stdout, /STUB_OK/);
+  for (const body of viaFile.chat) assert.ok(!('chat_template_kwargs' in body), 'rc off');
+
+  const dflt = await startStub({ ids: [OTHER], template: SUPPORTS });
+  await cli(dflt, ['hello']);
+  dflt.close();
+  assert.equal(pinned(turnsOf(dflt)[0]), true, 'on unless something turns it off');
+});
+
+test('--no-think leaves nothing to preserve, so the field is not sent', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const out = await cli(stub, ['--no-think', 'hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const [turn] = turnsOf(stub);
+  assert.equal(turn.enable_thinking, false);
+  assert.ok(!('chat_template_kwargs' in turn));
+});
+
+test('a failed template lookup is inert: the session runs, the field is not guessed', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS, modelInfoStatus: 500 });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/, 'detection failing must not stop the turn');
+  const [turn] = turnsOf(stub);
+  assert.equal(turn.model, OTHER);
+  assert.equal(turn.stream, true);
+  assert.ok(Array.isArray(turn.messages) && turn.messages.length >= 2, 'body still well formed');
+  for (const body of stub.chat) assert.ok(!('chat_template_kwargs' in body));
+});
+
+test('every request of a tool loop carries it, not only the first', async (t) => {
+  const stub = await startStub({
+    ids: [OTHER],
+    template: SUPPORTS,
+    turns: [
+      { tool: ['list_dir', { path: '.' }] },
+      { tool: ['list_dir', { path: 'src' }] },
+      { text: 'STUB_OK' },
+    ],
+  });
+  const out = await cli(stub, ['look around']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const turns = turnsOf(stub);
+  assert.equal(turns.length, 3, 'two tool steps and a final answer');
+  assert.deepEqual(turns.map(pinned), [true, true, true]);
+  assert.ok(turns[2].messages.some((m) => m.role === 'tool'),
+    'the later requests really are follow-ups, not repeats of the first');
+  t.diagnostic(`tool-loop requests: ${turns.length}`);
 });

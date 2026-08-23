@@ -46,10 +46,11 @@ test('status line shows only what is active', () => {
 
   const loud = strip(statusLine({
     model: 'unsloth/Model-Q4/AGENT', auto: true, yes: true, noThink: true,
-    mcp: 'nx,kronk', steps: 50, used: 22000, window: 131072,
+    noPreserve: true, mcp: 'nx,kronk', steps: 50, used: 22000, window: 131072,
   }));
   assert.match(loud, /auto/);
   assert.match(loud, /no-think/);
+  assert.match(loud, /no-preserve/);
   assert.match(loud, /mcp nx,kronk/);
   assert.match(loud, /steps 50/);
   assert.match(loud, /22k\/131k 17%/);

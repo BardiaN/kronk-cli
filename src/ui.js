@@ -52,12 +52,13 @@ export function fmtUsage(u, window) {
  * attached, and how full the window is. Rendered fresh before every prompt so
  * it always reflects the current state rather than the state at startup.
  */
-export function statusLine({ model, auto, yes, noThink, mcp, steps, used, window }) {
+export function statusLine({ model, auto, yes, noThink, noPreserve, mcp, steps, used, window }) {
   const bits = [];
   bits.push(c.grey(model.split('/').pop()));
   if (auto) bits.push(c.magenta('auto'));
   else if (yes) bits.push(c.yellow('yes'));
   if (noThink) bits.push(c.grey('no-think'));
+  if (noPreserve) bits.push(c.grey('no-preserve'));
   if (mcp) bits.push(c.cyan(`mcp ${mcp}`));
   if (Number.isFinite(steps)) bits.push(c.grey(`steps ${steps}`));
   const ctx = fmtContext(used, window);

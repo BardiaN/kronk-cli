@@ -1,6 +1,6 @@
 import { streamChat } from './client.js';
 import { TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval } from './tools.js';
-import { config } from './config.js';
+import { config, shouldPreserveThinking } from './config.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
@@ -58,6 +58,9 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
     try {
       for await (const ev of streamChat({
         model, messages, tools, signal, maxTokens: config.maxTokens, noThink: config.noThink,
+        // Re-read every step: this has to hold for the tool-loop follow-ups too,
+        // and `/think` can flip the answer between one turn and the next.
+        preserveThinking: shouldPreserveThinking(),
       })) {
         if (ev.type === 'reasoning') {
           if (!config.showThinking) continue;

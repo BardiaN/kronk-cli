@@ -60,6 +60,9 @@ if (args.help) {
     KRONK_MAX_TOKENS    output cap per response (default 8192)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
     KRONK_NO_THINK      set to 1 to disable reasoning
+    KRONK_PRESERVE_THINKING
+                        false to stop pinning earlier think blocks in the
+                        prompt (smaller prompts, cache lost on every turn)
     KRONK_WARM          false to skip the boot-time model preload
     KRONK_AUTO_COMPACT  false to disable automatic compaction
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
@@ -122,9 +125,10 @@ async function boot() {
 
   if (config.warm) await ensureLoaded(ids);
 
-  const { configured, native } = await modelLimits(config.model);
+  const { configured, native, preserveThinking } = await modelLimits(config.model);
   config.contextWindow = configured;
   config.nativeContext = native;
+  config.templatePreservesThinking = preserveThinking;
   return ids;
 }
 
@@ -398,6 +402,8 @@ async function main() {
       auto: autoApprove && messages[0].content.startsWith(SYSTEM_AUTO),
       yes: autoApprove,
       noThink: config.noThink,
+      // Only news when the model could have had it and the user said no.
+      noPreserve: config.templatePreservesThinking && !config.noThink && !config.preserveThinking,
       mcp: mcp?.routes.size ? [...mcp.servers.keys()].join(',') : null,
       steps: config.maxSteps,
       used: config.lastUsed,

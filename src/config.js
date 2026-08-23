@@ -24,6 +24,11 @@ export const config = {
   maxSteps: Number(process.env.KRONK_MAX_STEPS ?? file.maxSteps ?? Infinity),
   showThinking: (process.env.KRONK_THINKING ?? String(file.showThinking ?? 'true')) !== 'false',
   noThink: (process.env.KRONK_NO_THINK ?? String(file.noThink ?? '')) === '1',
+  // The chat template drops earlier <think> blocks once a newer user message
+  // arrives, which rewrites the prefix and throws the whole session cache away.
+  // Pinning them costs the tokens the blocks occupy and saves the re-prefill.
+  preserveThinking:
+    (process.env.KRONK_PRESERVE_THINKING ?? String(file.preserveThinking ?? 'true')) !== 'false',
   // Kronk admits a model on its first inference request, not at server start.
   // Pay that cold load at boot rather than on the first typed prompt.
   warm: (process.env.KRONK_WARM ?? String(file.warm ?? 'true')) !== 'false',
@@ -39,8 +44,18 @@ export const config = {
   lastUsed: 0,
   contextWindow: null,   // filled in at boot from Kronk
   nativeContext: null,
+  templatePreservesThinking: false,   // filled in at boot from the model's template
   rcPath: RC,
 };
+
+/**
+ * Whether this request should pin the earlier think blocks: the user wants it,
+ * the model's template declares the parameter, and reasoning is on at all —
+ * with `--no-think` there is nothing to preserve. Read per request, because
+ * `/think` flips `noThink` in the middle of a session.
+ */
+export const shouldPreserveThinking = () =>
+  config.preserveThinking && config.templatePreservesThinking && !config.noThink;
 
 /**
  * File contents and command output leave this process in request bodies, which

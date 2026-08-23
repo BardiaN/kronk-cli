@@ -16,9 +16,16 @@ export async function listModels() {
 }
 
 /**
- * Effective context window for a model id, plus the model's native maximum.
+ * Effective context window for a model id, the model's native maximum, and
+ * whether its chat template understands `preserve_thinking`.
  * The id contains slashes, so it must be percent-encoded — Kronk's route takes
  * one path segment and 404s on a raw id.
+ *
+ * The template is the only reliable source for the last one: Kronk reports
+ * `model_config["chat-template-kwargs"]` as null even when the profile sets the
+ * flag, so what the server is already doing cannot be read back.
+ *
+ * Every failure answers "unknown", which the caller reads as "do not send it".
  */
 export async function modelLimits(id) {
   try {
@@ -26,8 +33,10 @@ export async function modelLimits(id) {
     const configured = d.model_config?.['context-window'] ?? null;
     const nativeKey = Object.keys(d.metadata ?? {}).find((k) => k.endsWith('.context_length'));
     const native = nativeKey ? Number(d.metadata[nativeKey]) : null;
-    return { configured, native };
-  } catch { return { configured: null, native: null }; }
+    const template = d.metadata?.['tokenizer.chat_template'];
+    const preserveThinking = typeof template === 'string' && template.includes('preserve_thinking');
+    return { configured, native, preserveThinking };
+  } catch { return { configured: null, native: null, preserveThinking: false }; }
 }
 
 /** Native Kronk model list: size, projector, validation. */
@@ -64,7 +73,9 @@ export async function tokenize(model, input) {
  *   {type:'usage',     value}
  *   {type:'done',      calls, finish}
  */
-export async function* streamChat({ model, messages, tools, signal, maxTokens, noThink }) {
+export async function* streamChat({
+  model, messages, tools, signal, maxTokens, noThink, preserveThinking,
+}) {
   const res = await req('/chat/completions', {
     method: 'POST',
     signal,
@@ -76,6 +87,7 @@ export async function* streamChat({ model, messages, tools, signal, maxTokens, n
       stream_options: { include_usage: true },
       max_completion_tokens: maxTokens,
       ...(noThink ? { enable_thinking: false } : {}),
+      ...(preserveThinking ? { chat_template_kwargs: { preserve_thinking: true } } : {}),
     }),
   });
 

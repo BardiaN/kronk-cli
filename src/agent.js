@@ -11,7 +11,7 @@ Rules:
 - Inspect before you answer. Use read_file / list_dir / search rather than guessing at code.
 - Prefer one decisive action over narrating options.
 - Keep prose short. Code blocks should be complete and runnable.
-- The working directory is the user's project root. Paths are relative to it.`;
+- The working directory is the user's project root. Paths are relative to it. You are already inside it. Do not \`cd\` above it. If a command reports that this is not a git repository, you have left the project — return to it rather than searching elsewhere.`;
 
 export const SYSTEM_AUTO = `${SYSTEM}
 

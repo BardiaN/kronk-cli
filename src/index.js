@@ -11,28 +11,17 @@ import { projectContext } from './context.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
+import { parseArgv } from './argv.js';
 
 // ---- argv -------------------------------------------------------------
-const argv = process.argv.slice(2);
-const flag = (...names) => {
-  const i = argv.findIndex((a) => names.includes(a));
-  if (i === -1) return false;
-  argv.splice(i, 1);
-  return true;
-};
-let AUTO_YES = flag('-y', '--yes');
-if (flag('--no-think')) config.noThink = true;
-// --auto: run the whole task unattended (implies --yes)
-const AUTO = flag('-a', '--auto');
-if (AUTO) AUTO_YES = true;
+const args = parseArgv(process.argv.slice(2));
+if (args.error) {
+  // A usage error is not a conversation: stderr, exit 2, nothing sent anywhere.
+  console.error(`\n${args.error}\n`);
+  process.exit(2);
+}
 
-const SHOW_MODELS = flag('--models', '-l', '--list');
-const SHOW_MCP = flag('--mcp-list');
-const NO_CONTEXT = flag('--no-context');
-if (flag('--no-compact')) config.autoCompact = false;
-if (flag('--no-warm')) config.warm = false;
-
-if (flag('-h', '--help')) {
+if (args.help) {
   console.log(`
   kronk-cli — a terminal agent for local models served by Kronk
 
@@ -55,6 +44,7 @@ if (flag('-h', '--help')) {
         --no-think      disable the model's reasoning pass (faster)
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
+        --              end option parsing; everything after is the prompt
 
   ENVIRONMENT
     KRONK_URL           default http://localhost:11435/v1
@@ -71,34 +61,22 @@ if (flag('-h', '--help')) {
 `);
   process.exit(0);
 }
-const opt = (name) => {
-  const i = argv.findIndex((a) => a === name);
-  if (i === -1) return null;
-  const v = argv[i + 1];
-  argv.splice(i, 2);
-  return v;
-};
-const modelArg = opt('--model') ?? opt('-m');
-if (modelArg) config.model = modelArg;
-// `--mcp` alone attaches everything configured; `--mcp nx,kronk` narrows it.
-let MCP_ON = false;
-let MCP_WANTED = null;
-{
-  const i = argv.findIndex((a) => a === '--mcp');
-  if (i !== -1) {
-    MCP_ON = true;
-    const next = argv[i + 1];
-    if (next && !next.startsWith('-')) {
-      MCP_WANTED = next.split(',').map((x) => x.trim()).filter(Boolean);
-      argv.splice(i, 2);
-    } else {
-      argv.splice(i, 1);
-    }
-  }
-}
 
-const stepsArg = opt('--steps');
-if (stepsArg) config.maxSteps = /^(0|off|none|inf|unlimited)$/i.test(stepsArg) ? Infinity : Number(stepsArg);
+// --auto: run the whole task unattended (implies --yes)
+const AUTO = args.auto;
+const AUTO_YES = args.yes || AUTO;
+const SHOW_MODELS = args.models;
+const SHOW_MCP = args.mcpList;
+const NO_CONTEXT = args.noContext;
+// `--mcp` alone attaches everything configured; `--mcp nx,kronk` narrows it.
+const MCP_ON = args.mcp;
+const MCP_WANTED = args.mcpNames;
+
+if (args.noThink) config.noThink = true;
+if (args.noCompact) config.autoCompact = false;
+if (args.noWarm) config.warm = false;
+if (args.model) config.model = args.model;
+if (args.steps !== null) config.maxSteps = args.steps;
 
 async function boot() {
   let ids;
@@ -336,7 +314,7 @@ async function main() {
   if (SHOW_MCP) { await showMcp(); process.exit(0); }
 
   // non-interactive: `kronk-cli "prompt"` or `echo prompt | kronk-cli`
-  const inline = argv.join(' ').trim();
+  const inline = args.words.join(' ').trim();
   // With an inline prompt, stdin is optional extra context — don't block on it.
   // Without one, stdin IS the prompt, so wait longer before giving up.
   const piped = await readStdin(inline ? 200 : 10_000);

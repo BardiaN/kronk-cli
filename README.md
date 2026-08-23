@@ -380,9 +380,15 @@ as before.
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
 | `-h`, `--help` | — | Print all options and exit |
+| `--` | — | End option parsing; everything after it is prompt text, dashes and all |
 
-Anything not consumed as a flag becomes the prompt. With both an inline prompt and piped stdin,
-the two are concatenated.
+Anything not consumed as an option becomes the prompt, except a token that looks like an
+option and is not one: `kronk-cli -auto "…"` exits 2 with `unknown option: -auto` and a
+suggestion, rather than folding the typo into the prompt and running with the mode off.
+Prose is untouched — a dash followed by a space is not option-shaped, so
+`kronk-cli "- fix the dashes bug"` still asks the question — and `--` ends option parsing,
+so `kronk-cli -- --explain this` sends `--explain this`. With both an inline prompt and
+piped stdin, the two are concatenated.
 
 `Ctrl-C` aborts the in-flight response and the tool loop without killing the session.
 

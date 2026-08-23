@@ -23,6 +23,9 @@ entirely on your machine. No network, no API key, no per-token cost.
   2104→812 tok · 61.3 tok/s · ttft 240ms · 1980 cached
 ```
 
+*A real session transcript, kept here to show the UI format. For numbers you can reproduce
+yourself on your own hardware, see [Performance](#performance).*
+
 [![ci](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/ci.yml)
 [![security](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/security.yml)
 [![codeql](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/BardiaN/kronk-cli/actions/workflows/codeql.yml)
@@ -321,7 +324,98 @@ kronk-cli "explain src/agent.js"            # one shot, prints and exits
 git diff | kronk-cli "review this diff"     # stdin as extra context
 git log --oneline -20 | kronk-cli           # stdin as the whole prompt
 kronk-cli --auto "make the tests pass"      # unattended, runs the whole task
+kronk-cli setup                             # first run: model, profile, restart
 ```
+
+---
+
+## Subcommands
+
+### `kronk-cli setup`
+
+The three things a fresh install needs — the model on disk, an `/AGENT` profile for it, and a
+server restart so Kronk reads that profile — walked in order, announcing each step. `--dry-run`
+walks the whole thing and prints what it *would* do, which is the safest way to see it:
+
+```console
+$ kronk-cli setup --dry-run --model unsloth/Qwen3-0.6B-Q8_0/AGENT
+
+  kronk-cli setup  · dry run, nothing will change
+
+  1) Checking the Kronk server
+     http://localhost:11435/v1 · serving 2 models
+
+  2) Resolving the target
+     profile  unsloth/Qwen3-0.6B-Q8_0/AGENT
+     catalog  unsloth/Qwen3-0.6B-Q8_0
+     binary   /opt/homebrew/bin/kronk
+
+  3) Checking whether the model is downloaded
+     would run: kronk catalog show unsloth/Qwen3-0.6B-Q8_0 --local
+
+  4) Downloading the model
+     would run: kronk model pull unsloth/Qwen3-0.6B-Q8_0
+
+  5) Writing the /AGENT profile
+     file  ~/.kronk/models/model_config.yaml
+     This block will be added:
+
+       unsloth/Qwen3-0.6B-Q8_0/AGENT:
+         context-window: 131072
+         nseq-max: 2
+         chat-template-kwargs:
+           preserve_thinking: true
+         sampling-parameters:
+           max_tokens: 16384
+
+     would update: ~/.kronk/models/model_config.yaml
+     would back up first: ~/.kronk/models/model_config.yaml.bak…
+
+  6) Restarting Kronk
+     model_config.yaml is read only when the server starts, so the new
+     profile does nothing until Kronk is restarted.
+     would run: kronk server stop
+     would run: kronk server start --detach
+
+  Dry run complete — nothing was written and nothing was started.
+```
+
+| Flag | |
+|---|---|
+| `--model <id>` | Set up a model other than the default. A trailing `/AGENT` is a Kronk profile name, not a catalog id, so it is stripped before pulling |
+| `--context <n>` | Override the profile's `context-window`. Default `131072`, capped at the model's native maximum when Kronk reports one |
+| `-y`, `--yes` | Answer every prompt yes. Required in CI |
+| `--dry-run` | Print every action, including the exact YAML and the exact commands, and change nothing |
+
+Nothing slow or destructive happens without an answer: the pull, the file write and the restart
+are each confirmed. Declining exits 0 and prints the commands you would run by hand. If the
+`kronk` binary is not on `PATH`, setup prints the whole manual recipe instead of failing with a
+spawn error. Run it twice and the second run does nothing.
+
+Piped or unattended input answers the first question only — readline discards lines nobody is
+waiting for — so a question with no answer left is a **no**: setup says `stdin ended, assuming
+no`, prints the command, and exits 0. Scripts and CI want `-y`.
+
+**What it writes.** Only the `models:` mapping of `~/.kronk/models/model_config.yaml` — point it
+elsewhere with `KRONK_MODEL_CONFIG`. This project has no YAML parser and will not gain one, so
+the writer is a structural scan with a single job — find the one `models:` key and splice the
+entry beneath it — and it refuses whenever the answer is not obvious:
+
+- The file is copied aside before any write, to `model_config.yaml.bak`, and **never over a
+  backup that already exists**: `.bak2`, `.bak3`, and so on until a free name is found.
+- Every line it did not add survives byte for byte — comments, blank lines and key order
+  included. LF and CRLF files each keep their own endings.
+- Missing file → created with `version: 1`, `models:` and the entry. No `models:` key → both are
+  appended. A `models:` key with no children → the entry becomes its first child.
+- **More than one top-level `models:` key** — two concatenated documents, which does happen in
+  the wild — is refused outright. It prints the block, names the file, and exits non-zero
+  without touching anything.
+- A missing `~/.kronk/models/` means Kronk has never run. Setup says so and stops, rather than
+  creating Kronk's data directory on its behalf.
+
+The profile it writes is the one documented under
+[Tip: use an `/AGENT` profile](#tip-use-an-agent-profile) — `context-window`, `nseq-max`,
+`preserve_thinking` and `max_tokens`, and deliberately no sampling parameters.
 
 ---
 
@@ -364,7 +458,90 @@ as before.
 
 ---
 
+## Sampling override warning
+
+The same startup lookup that finds the context window also carries the model's own sampling
+recommendations — `general.sampling.temp`, `top_k` and `top_p`, straight from the GGUF — next
+to the effective `sampling-parameters` Kronk is actually applying once any profile has been
+merged in. `kronk-cli` compares the two and, if a profile is overriding what the model ships,
+says so in one grey line under the startup banner:
+
+```console
+$ kronk-cli
+  ██ kronk-cli  · local agent, no network
+  model  unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT
+  server http://localhost:11435/v1
+  /help for commands · Ctrl-C to interrupt · /exit to quit
+
+  note     profile overrides the model's own sampling: temperature 0.6 (model recommends 1)
+```
+
+One line, however many of the three parameters disagree — not one per parameter. It stays
+silent when the values agree, when the model ships no `general.sampling.*` metadata at all, or
+when the model-info lookup fails: this is information, not a failure, and it never blocks,
+prompts, or changes the exit code.
+
+**The fix** is the one described in [Tip: use an `/AGENT` profile](#tip-use-an-agent-profile):
+remove `temperature`, `top_k` and `top_p` from the profile's `sampling-parameters` block so
+Kronk applies what the model itself recommends.
+
+Like the rest of the banner, the line is part of the interactive REPL's startup — a one-shot
+run (`kronk-cli "prompt"`) prints no banner and prints nothing here either.
+
+---
+
+## Performance
+
+The transcripts above are real sessions, kept to show what the UI looks like — not a benchmark
+table, and nothing here reproduced them until now. `scripts/bench.mjs` does: a fixed prompt run
+twice for generation speed, a long deterministic filler prompt carried across three turns for
+prompt-cache retention, and — only when the target model is not already resident — a cold-load
+timing using the same request `warm()` sends at boot. It is a dev tool, excluded from the
+published package; run it straight from a checkout:
+
+```bash
+node scripts/bench.mjs               # table
+node scripts/bench.mjs --json        # same numbers, one JSON object, diffable between runs
+node scripts/bench.mjs --skip-cold-load
+```
+
+It talks to whatever `KRONK_URL` / `KRONK_MODEL` you already have configured, so the numbers
+below are specific to one machine — measure your own rather than trusting these across different
+hardware.
+
+Measured 2026-08-23 on an Apple M4 Max, 64 GB RAM (macOS), against
+`unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT`, kronk 1.31.9, llama.cpp b10549 — from
+`node scripts/bench.mjs`:
+
+```
+kronk-bench · model unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT · kronk 1.31.9 · llama.cpp b10549
+
+1. Generation speed
+   run 1: 229 tok · 2.97s · 77.1 tok/s · ttft 133ms
+   run 2: 220 tok · 2.82s · 78 tok/s · ttft 115ms
+
+2. Prompt cache retention (filler prompt: 5491 tok)
+   turn 1: 5518 tok prompt · 5496 tok cached (100%) · 149ms
+   turn 2: 5544 tok prompt · 5511 tok cached (99%) · 185ms
+   turn 3: 5571 tok prompt · 5537 tok cached (99%) · 160ms
+
+3. Cold load
+   skipped — unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT is already resident — a cold load number
+   here would be misleading
+```
+
+That generation speed and cache-retention region matches the transcripts above (60–80 tok/s,
+prompt cache reused above 99% on repeat turns) — this machine's Kronk server is shared with other
+work, so a run under contention lands lower in that range and a quiet run lands higher; that
+variance is expected, which is why the script reports each run rather than a single averaged
+number. The cold-load section only prints a number the one time a run finds the model not
+resident — do not stop or unload a shared server's model just to force that path; skip it, the
+same way this run did.
+
+---
+
 ## Command-line options
+
 
 | Flag | Default | |
 |---|---|---|
@@ -380,9 +557,15 @@ as before.
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
 | `-h`, `--help` | — | Print all options and exit |
+| `--` | — | End option parsing; everything after it is prompt text, dashes and all |
 
-Anything not consumed as a flag becomes the prompt. With both an inline prompt and piped stdin,
-the two are concatenated.
+Anything not consumed as an option becomes the prompt, except a token that looks like an
+option and is not one: `kronk-cli -auto "…"` exits 2 with `unknown option: -auto` and a
+suggestion, rather than folding the typo into the prompt and running with the mode off.
+Prose is untouched — a dash followed by a space is not option-shaped, so
+`kronk-cli "- fix the dashes bug"` still asks the question — and `--` ends option parsing,
+so `kronk-cli -- --explain this` sends `--explain this`. With both an inline prompt and
+piped stdin, the two are concatenated.
 
 `Ctrl-C` aborts the in-flight response and the tool loop without killing the session.
 
@@ -431,10 +614,13 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_URL` | `http://localhost:11435/v1` | Kronk API base |
 | `KRONK_TOKEN` | `kronk` | Any non-empty value while Kronk runs open; a real JWT when protected |
 | `KRONK_MODEL` | `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` | Model id |
+| `KRONK_MODEL_CONFIG` | `~/.kronk/models/model_config.yaml` | Kronk's per-model config, the file `kronk-cli setup` writes |
 | `KRONK_MAX_TOKENS` | `8192` | Output cap per response |
 | `KRONK_MAX_STEPS` | unlimited | Cap on tool calls per task |
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
+| `KRONK_PRESERVE_THINKING` | `true` | `false` stops pinning earlier think blocks in the prompt |
+| `KRONK_REPLAY_REASONING` | autonomous-only | `true`/`false` overrides the default in either direction — see [What reasoning gets sent back](#what-reasoning-gets-sent-back) |
 | `KRONK_TOOL_TIMEOUT` | `900` | Seconds before a shell command is killed |
 | `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
 | `KRONK_SANDBOX_ALLOW` | — | Paths to make fully available inside the sandbox, comma or colon separated |
@@ -460,7 +646,9 @@ The per-turn usage line still prints after each response; this one is the runnin
   "showThinking": false,
   "autoCompact": true,
   "compactAt": 0.85,
-  "noThink": true
+  "noThink": true,
+  "preserveThinking": true,
+  "replayReasoning": true
 }
 ```
 
@@ -504,7 +692,9 @@ memory it holds.
 
 ### Tip: use an `/AGENT` profile
 
-Kronk lets one GGUF serve several runtime configurations. Add this to
+Kronk lets one GGUF serve several runtime configurations. `kronk-cli setup` writes this profile
+for you, backs the file up first, and offers the restart — see
+[Subcommands](#kronk-cli-setup). To do it by hand, add this to
 `~/.kronk/models/model_config.yaml` and restart the server:
 
 ```yaml
@@ -523,7 +713,8 @@ models:
 their authors recommend, Kronk reads them, and an explicit block only overrides the model's own
 advice. This model ships `general.sampling.temp: 1`, `top_k: 20`, `top_p: 0.95`; an earlier
 version of this page recommended `temperature: 0.6`, which quietly fought that. Check what your
-model carries with `kronk model show <id> --local`.
+model carries with `kronk model show <id> --local`. If a profile does pin one of these,
+`kronk-cli` says so at startup — see [Sampling override warning](#sampling-override-warning).
 
 `preserve_thinking` earns its place in an agent profile. The chat template decides per assistant
 message whether to render its `<think>` block, and the decision depends on which user message is
@@ -534,7 +725,78 @@ the prefix stays stable and the server keeps the cache.
 
 Measured on Kronk 1.31.8, on a 13.4k-token conversation with the profile above: the first turn prefilled in
 10.9 s with nothing cached, and every following turn reported **13,4xx of 13,4xx tokens cached**
-and answered in 1.6 s.
+and answered in 1.6 s. *A one-off session, not reproducible from this repo as run — see
+[Performance](#performance) for the current, scripted measurement of the same effect.*
+
+**You no longer have to set it.** kronk-cli sends `chat_template_kwargs: {preserve_thinking: true}`
+on every chat request, regardless of what the profile says, so an existing profile that predates
+this line gets the stable prefix anyway. It is sent only when the selected model's chat template
+actually declares the parameter — read from `tokenizer.chat_template` in
+`GET /v1/kronk/models/<id>` at startup — and never guessed at when that lookup fails.
+
+It is a trade, not a free win: the retained `<think>` blocks stay in the prompt and cost tokens.
+On a small window you may prefer to pay the prefill instead, so `KRONK_PRESERVE_THINKING=false`
+(or `"preserveThinking": false` in `~/.kronk-cli.json`) turns it off, and the status line says
+`no-preserve` when it is off. With `--no-think` there is no reasoning to preserve and the field is
+not sent at all.
+
+### What reasoning gets sent back
+
+`preserve_thinking` decides how the template *renders* a think block. What is in that block is a
+separate question, and kronk-cli answers it like this: **the model's reasoning is replayed for the
+current task and dropped for everything before it — by default in `--auto`, and never by default
+in the interactive REPL.**
+
+Concretely, an assistant message keeps its `reasoning_content` on the wire while it sits after the
+most recent real user prompt. A tool result is `role: tool`, so it does not end the task — one
+prompt and the whole tool loop it started share the boundary. The moment a new user prompt arrives,
+the previous task's blocks are stripped and render empty. That is the same boundary the chat
+template computes as `ns.last_query_index`.
+
+Within a task the model reasons about tool result N before it picks tool N+1, and dropping that
+makes it re-derive its plan from tool output alone at every step. Those tokens are also
+append-only — new on every step, never part of the cached prefix — so replaying them costs nothing
+in cache terms. Reasoning from *earlier* turns is the opposite: it sits in the prefix for the rest
+of the session, grows without bound, and brings automatic compaction forward.
+
+It is a trade, and the bill arrives at your *next* prompt: stripping the previous task's blocks at
+the boundary rewrites the prefix that prompt sits after, so the request resets to the cached system
+prompt instead of the cached conversation and re-prefills the rest. Measured on a live server, first
+turn after a second prompt, prompt tokens cached vs. re-prefilled:
+
+| | cached | re-prefilled |
+|---|---|---|
+| never replay | 906 | 60 |
+| replay current task | 757 | 516 |
+| replay everything | 1,827 | 367 |
+
+`--auto` runs exactly one user prompt through a whole tool loop, so that boundary is never crossed
+in a run: the within-task benefit above is free there, and the reset never happens. The REPL is a
+user typing repeatedly, so every prompt after the first pays it. Measured over five paired sessions
+on Kronk 1.31.9 with `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` (llama.cpp `b10549`,
+darwin/arm64/metal) with replay forced on for the whole session — the same multi-step task, nine to
+twenty-four tool calls depending on the run, followed by the same follow-up question:
+
+| | replay on | replay off |
+|---|---|---|
+| Prompt tokens at end of session | 10,179 / 11,238 / 7,960 / 10,018 / 9,470 | 20,640 / 8,889 / 10,648 / 10,259 / 13,209 |
+| Model turns to finish the first task | 6 / 7 / 2 / 7 / 8 | 9 / 9 / 7 / 7 / 5 |
+| Cached tokens on the first turn after the second prompt | 1,222 every run | the whole prefix every run |
+| Time to first token on that turn | 5.9 / 7.4 / 4.4 / 5.9 / 6.5 s | 1.2 / 0.8 / 0.9 / 0.7 / 1.1 s |
+| Wall clock, three timed pairs | 51 / 63 / 50 s | 68 / 49 / 55 s |
+
+So: fewer turns and fewer prompt tokens over a session, paid for with one re-prefill per prompt —
+4.4-7.4 s to first token instead of 0.7-1.2 s once cached. That cost is only worth paying when there
+is exactly one prompt to begin with, which is why the default is autonomous-only rather than on
+everywhere. Sampling is at the model's own `temperature: 1`, so the turn counts above are indicative
+rather than reproducible.
+
+`KRONK_REPLAY_REASONING`, or `"replayReasoning"` in `~/.kronk-cli.json`, overrides the default in
+either direction rather than just turning it off: `true` replays reasoning in the REPL too, `false`
+turns it off even in `--auto`. Leaving it unset is what gives you the autonomous-only default. It is
+off regardless of `--auto` when `--no-think` is set — there is no reasoning to replay — and when the
+selected model's chat template does not declare `preserve_thinking`, because such a template does
+not read `reasoning_content` either and would discard the blocks.
 
 ---
 
@@ -557,7 +819,8 @@ Three places surface it:
   18471→57 tok · 69.0 tok/s · ttft 397ms · 18260 cached   18k/131k 14% ▓░░░░░░░░░
 ```
 
-Grey under 70%, yellow past 70%, red past 90%.
+Grey under 70%, yellow past 70%, red past 90%. *Also a real transcript — see
+[Performance](#performance) for how to reproduce numbers like these.*
 
 **`/context`**, on demand:
 
@@ -652,6 +915,10 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `search` | — | Regex search via ripgrep, falling back to grep |
 | `write_file` | ✋ | Create or overwrite; shows a diff preview first |
 | `bash` | ✋ | Run a command; shows it first |
+| `set_plan` | — | Record the task checklist; replaces the stored one |
+
+`set_plan` writes nothing and runs nothing — it hands the harness a list, which is why it is
+never gated. See [Autonomous mode](#autonomous-mode) for what the harness then does with it.
 
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
 escape the launch root — including through a symlink. `bash` additionally runs under an OS
@@ -874,6 +1141,35 @@ $ kronk-cli --auto "write a CSV stats script, add a node:test, run it, fix what 
 
 `Ctrl-C` stops it. Add `--steps N` for unattended runs where nobody is watching.
 
+**The task checklist.** Long tickets used to end early: the model satisfied one criterion of a
+dozen, wrote a confident summary, and stopped. The autonomous prompt now tells it to call
+`set_plan` before its first edit, with one item per acceptance criterion, and to update the list
+as it goes. The harness holds that list and does two things with it:
+
+- **Re-states it every round.** The open items, verbatim, and how many of how many are done, are
+  appended to the last tool result of the round that has just run — so the original request is
+  never thousands of tokens behind. Appended, never moved: the conversation only ever grows at
+  the end, which is what keeps Kronk's prompt cache alive across a long run. Earlier rounds keep
+  the snapshot they were given, and each one says it is a point in time; the last is the current
+  one. The list is held outside the message list as well, so [compaction](#compaction) cannot
+  summarise it away.
+- **Declines the first premature "done".** A reply with no tool calls, while items are still
+  open, gets the open list handed back instead of ending the run. Twice at most: after that the
+  turn ends and the unfinished items are printed in yellow. `--steps` still wins, and `Ctrl-C`
+  still stops everything.
+
+```console
+  1 ⚙ plan: 4 items
+    · keep the push trigger on master
+    ▸ add the concurrency guard
+    · document the change in README.md
+    · run the linter
+```
+
+None of this fires without a plan: if the model never calls `set_plan`, a run behaves exactly as
+it did before, and interactive (non-`--auto`) conversation is never held to a checklist. The
+model writes the plan; the harness only holds it to it.
+
 > ⚠️ `--auto` runs shell commands without asking. Use it where `git checkout` can save you.
 
 ---
@@ -902,6 +1198,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/tools.js` | tool definitions, sandbox, shell session |
 | `src/context.js` | startup scan: git, layout, `AGENTS.md` |
 | `src/compact.js` | summarizing the conversation when the window fills |
+| `src/plan.js` | the task checklist and the snapshot the model sees |
 | `src/mcp.js` | MCP client: stdio + HTTP transports, tool routing |
 | `src/distill.js` | summarizing large tool output in a throwaway context |
 | `src/config.js` | precedence of flags, env, config file |
@@ -932,6 +1229,15 @@ previous prompt prefix — watch `cached` climb in the usage line.
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what gets merged quickly. Commits and PR
+titles follow [Conventional Commits](https://www.conventionalcommits.org/), and releases follow
+npm [semver](https://semver.org/) — a feature or fix PR leaves `package.json` alone, and a
+separate release commit bumps the version. Details are in CONTRIBUTING.md.
+
+---
+
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

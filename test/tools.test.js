@@ -43,6 +43,19 @@ test('bash surfaces stderr on failure', async () => {
   assert.match(out, /boom/);
 });
 
+test('the result handed to messages is complete, not capped to the display line count', async () => {
+  // Display caps a failed result at 20 lines after the first (see
+  // toolResultLines in src/ui.js). The string this returns is what agent.js
+  // pushes into `messages` verbatim, so it must carry every line the display
+  // cap would otherwise hide, plus the full `stderr:` block.
+  const out = await runBash("for i in $(seq 1 50); do echo \"err $i\" >&2; done; exit 1");
+  assert.match(out, /^error: exit code 1/);
+  assert.match(out, /stderr:/);
+  assert.match(out, /err 1\n/, 'first stderr line survives');
+  assert.match(out, /err 50/, 'last stderr line survives — no 20-line cap leaked in');
+  assert.equal(out.split('\n').length > 22, true, 'the full body is longer than the display cap');
+});
+
 test('bash returns plain output on success', async () => {
   assert.equal((await runBash('echo fine')).trim(), 'fine');
 });
@@ -88,4 +101,55 @@ test('MCP approval keys off write-ish verbs', () => {
   assert.ok(!mcpNeedsApproval('nx__nx_docs'));
   assert.ok(!mcpNeedsApproval('argocd__list_applications'));
   assert.ok(!mcpNeedsApproval('eks__get_pod_logs'));
+});
+
+// ── where a command actually ran ──────────────────────────────────────────────
+// realpathSync every expected path: on macOS the shell reports /private/var
+// while the raw mkdtempSync return says /var, so comparing against the raw path
+// fails for reasons that have nothing to do with what is being tested.
+const parent = realpathSync(join(root, '..'));
+
+test('a failing command that left the root reports where it really ran', async () => {
+  const out = await runBash('cd .. && exit 1');
+  assert.ok(out.split('\n').includes(`ran in: ${parent}`), out);
+  assert.ok(!out.includes(`cwd: ${root}`), 'the stale session cwd must not be reported');
+});
+
+test('a successful command that left the root says so', async () => {
+  const out = await runBash('cd .. && true');
+  assert.ok(out.split('\n').includes(`ran in: ${parent}`), out);
+  assert.match(out, /note: this command left the launch root/);
+});
+
+test('a successful in-root command is left exactly as it was', async () => {
+  assert.equal(await runBash('true'), '(no output)');
+});
+
+test('leaving the root does not move the session', async () => {
+  await runBash('cd .. && pwd');
+  assert.equal(session.cwd, root);
+});
+
+test('an in-root cd still persists to the next call', async () => {
+  await runBash('mkdir -p sub && cd sub');
+  assert.equal((await runBash('pwd')).trim(), join(root, 'sub'));
+  session.cwd = root;
+});
+
+test('a command that replaces its own shell reports the directory as unknown', async () => {
+  const out = await runBash('exec false');
+  assert.match(out, /^ran in: .+ \(final directory unknown\)$/m);
+});
+
+test('a timeout says where the command was running', async () => {
+  const out = await runBash('sleep 5', { timeoutMs: 100 });
+  assert.match(out, /error: killed after/);
+  assert.match(out, /^ran in: /m);
+});
+
+test('where it ran is printed before the output blocks, not after', async () => {
+  const out = await runBash('cd .. && echo boom >&2; exit 1');
+  assert.ok(out.indexOf('ran in:') < out.indexOf('stderr:'), out);
+  assert.ok(out.indexOf('note: this command left') < out.indexOf('stderr:'), out);
+  assert.match(out, /boom/, 'output is reported, not suppressed');
 });

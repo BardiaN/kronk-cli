@@ -52,12 +52,13 @@ export function fmtUsage(u, window) {
  * attached, and how full the window is. Rendered fresh before every prompt so
  * it always reflects the current state rather than the state at startup.
  */
-export function statusLine({ model, auto, yes, noThink, mcp, steps, used, window }) {
+export function statusLine({ model, auto, yes, noThink, noPreserve, mcp, steps, used, window }) {
   const bits = [];
   bits.push(c.grey(model.split('/').pop()));
   if (auto) bits.push(c.magenta('auto'));
   else if (yes) bits.push(c.yellow('yes'));
   if (noThink) bits.push(c.grey('no-think'));
+  if (noPreserve) bits.push(c.grey('no-preserve'));
   if (mcp) bits.push(c.cyan(`mcp ${mcp}`));
   if (Number.isFinite(steps)) bits.push(c.grey(`steps ${steps}`));
   const ctx = fmtContext(used, window);
@@ -103,6 +104,32 @@ export function liveLine() {
     update(info) { last = { ...last, ...info }; draw(); },
     done() { clearInterval(timer); process.stdout.write('\r\x1b[K'); },
   };
+}
+
+/**
+ * Render a failed tool result for the screen: the first line whole (however
+ * long), the rest indented four spaces and capped, so one runaway command
+ * cannot scroll the actionable part — the `stderr:` block — off the top of
+ * the terminal. Pure: `src/agent.js` prints whatever comes back. The model's
+ * own copy in `messages` is never touched; only the screen is bounded.
+ */
+export function toolResultLines(result, { maxLines = 20, maxWidth = 200 } = {}) {
+  const [first, ...rest] = result.split('\n');
+  const lines = [c.red(`  ✗ ${first}`)];
+
+  const shown = rest.slice(0, maxLines);
+  for (const line of shown) {
+    const body = line.length > maxWidth ? `${line.slice(0, maxWidth)}…` : line;
+    lines.push(c.grey(`    ${body}`));
+  }
+
+  const hidden = rest.length - shown.length;
+  if (hidden > 0) {
+    const noun = hidden === 1 ? 'line' : 'lines';
+    lines.push(c.grey(`    …${hidden} more ${noun} (the model received all of it)`));
+  }
+
+  return lines;
 }
 
 /** A one-line spinner that does not fight with streamed output. */

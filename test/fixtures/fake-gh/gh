@@ -1,0 +1,52 @@
+#!/bin/sh
+# Fake `gh` used only by test/wait-for-release.test.js to drive
+# .github/scripts/wait-for-release.sh without a real GitHub API.
+#
+# `gh api repos/.../git/ref/tags/vX`: exits 0 (tag found) when
+#   GH_FAKE_TAG_EXISTS=1, otherwise exits 1 (tag not found).
+#
+# `gh run list ...`: each call consumes the next comma-separated
+#   "status:conclusion" token from GH_FAKE_RUN_SEQUENCE (the last token
+#   repeats once the sequence is exhausted, so a run that never completes can
+#   be modelled with a single "in_progress:null"). A token of "none" prints an
+#   empty result, modelling "no run found yet". Every call is recorded to
+#   GH_FAKE_CALL_LOG, one line each, so a test can assert whether the loop
+#   ran at all.
+set -eu
+
+if [ "$1" = "api" ]; then
+  if [ "${GH_FAKE_TAG_EXISTS:-0}" = "1" ]; then
+    echo '{"ref":"refs/tags/vX"}'
+    exit 0
+  fi
+  exit 1
+fi
+
+if [ "$1" = "run" ] && [ "$2" = "list" ]; then
+  if [ -n "${GH_FAKE_CALL_LOG:-}" ]; then
+    echo "call" >> "$GH_FAKE_CALL_LOG"
+    n=$(wc -l < "$GH_FAKE_CALL_LOG" | tr -d ' ')
+  else
+    n=1
+  fi
+
+  seq="${GH_FAKE_RUN_SEQUENCE:-none}"
+  total=$(echo "$seq" | awk -F, '{print NF}')
+  idx=$n
+  if [ "$idx" -gt "$total" ]; then
+    idx=$total
+  fi
+  token=$(echo "$seq" | cut -d, -f"$idx")
+
+  if [ "$token" = "none" ]; then
+    echo "[]"
+    exit 0
+  fi
+  status=$(echo "$token" | cut -d: -f1)
+  conclusion=$(echo "$token" | cut -d: -f2)
+  printf '[{"status":"%s","conclusion":"%s"}]\n' "$status" "$conclusion"
+  exit 0
+fi
+
+echo "fake gh: unhandled args: $*" >&2
+exit 1

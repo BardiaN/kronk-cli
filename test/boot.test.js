@@ -1,88 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { execFile } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { config, DEFAULT_MODEL } from '../src/config.js';
 import { pickDefault, ensureLoaded } from '../src/boot.js';
+import { startStub } from './fixtures/kronk-stub.js';
 
 const run = promisify(execFile);
 const CLI = new URL('../src/index.js', import.meta.url).pathname;
 const OTHER = 'stub/Other-Q4/AGENT';
-
-/**
- * A Kronk stand-in with a controllable pool. `resident` is what
- * /v1/kronk/models/ps reports; `fail` maps a model id to the status its
- * admission should refuse with, which is how a model too large to fit
- * announces itself. Every completion request is recorded so a test can prove
- * what the CLI asked for — and, just as usefully, what it did not.
- */
-function startStub({ ids, resident = [], fail = {} } = {}) {
-  const chat = [];
-  const send = (res, code, body) => {
-    res.writeHead(code, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(body));
-  };
-
-  const server = createServer((req, res) => {
-    const url = req.url.split('?')[0];
-
-    if (url === '/v1/models') {
-      return send(res, 200, { object: 'list', data: ids.map((id) => ({ id, object: 'model' })) });
-    }
-    if (url === '/v1/kronk/models/ps') {
-      return send(res, 200, resident.map((id) => ({ id, status: 'loaded', vram_total: 1e9 })));
-    }
-    if (url.startsWith('/v1/kronk/models')) {
-      return send(res, 200, {
-        model_config: { 'context-window': 4096 },
-        metadata: { 'stub.context_length': '8192' },
-        data: [],
-      });
-    }
-    if (url === '/v1/tokenize') return send(res, 200, { tokens: 7 });
-
-    if (url === '/v1/chat/completions') {
-      let raw = '';
-      req.on('data', (d) => { raw += d; });
-      return req.on('end', () => {
-        const body = JSON.parse(raw);
-        chat.push(body);
-        if (fail[body.model]) {
-          return send(res, fail[body.model], { error: { message: 'insufficient VRAM for admission' } });
-        }
-        if (!body.stream) {
-          return send(res, 200, {
-            id: 'chatcmpl-stub',
-            choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'length' }],
-          });
-        }
-        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-        const chunk = (delta, finish = null) => JSON.stringify({
-          choices: [{ index: 0, delta, finish_reason: finish }],
-        });
-        res.write(`data: ${chunk({ role: 'assistant', content: 'STUB_OK' })}\n`);
-        res.write(`data: ${chunk({}, 'stop')}\n`);
-        res.write('data: [DONE]\n');
-        res.end();
-      });
-    }
-    return send(res, 404, { error: { message: `stub has no route for ${url}` } });
-  });
-
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve({
-      url: `http://127.0.0.1:${server.address().port}/v1`,
-      chat,
-      // undici keeps the socket alive, so a plain close() would leave the test
-      // process holding an open handle long after the assertions are done.
-      close: () => { server.closeAllConnections(); server.close(); },
-    }));
-  });
-}
 
 /** Point the module-level config at a stub for one test, then put it back. */
 async function against(stub, model, fn) {
@@ -168,11 +97,21 @@ test('every candidate is tried once, and a total failure is not fatal', async ()
   assert.deepEqual(new Set(tried), new Set([OTHER, DEFAULT_MODEL]));
 });
 
-/** Run the CLI itself against a stub, with a throwaway HOME so ~/.kronk-cli.json cannot interfere. */
-async function cli(stub, args) {
-  const env = { ...process.env, KRONK_URL: stub.url, HOME: mkdtempSync(join(tmpdir(), 'kronk-home-')), NO_COLOR: '1' };
+/**
+ * Run the CLI itself against a stub, with a throwaway HOME so ~/.kronk-cli.json
+ * cannot interfere — or, when `rc` is given, so it is the only thing that can.
+ */
+async function cli(stub, args, { env: extra = {}, rc = null } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'kronk-home-'));
+  if (rc) writeFileSync(join(home, '.kronk-cli.json'), JSON.stringify(rc));
+  // Inherited settings are cleared first, then `extra` applied, so a test can
+  // set one of them without the developer's own environment overriding it.
+  const env = { ...process.env, KRONK_URL: stub.url, HOME: home, NO_COLOR: '1' };
   delete env.KRONK_MODEL;
   delete env.KRONK_WARM;
+  delete env.KRONK_NO_THINK;
+  delete env.KRONK_PRESERVE_THINKING;
+  Object.assign(env, extra);
   // stdin must be closed, not merely idle: with an open pipe the CLI waits on
   // it for piped context and the test would hang instead of failing.
   return run(process.execPath, [CLI, '--no-context', ...args],
@@ -198,4 +137,241 @@ test('the CLI preloads before the first turn, and --no-warm skips it', async (t)
   assert.deepEqual(cold.chat.map((c) => Boolean(c.stream)), [true],
     'no warm-up: the first real turn pays the load');
   t.diagnostic(`with warm-up: ${warms.chat.length} requests, without: ${cold.chat.length}`);
+});
+
+// ---- preserve_thinking ------------------------------------------------
+//
+// The chat template renders an earlier assistant turn's <think> block only
+// while no newer user message exists — unless `preserve_thinking` pins it. The
+// agent has to send that on every request of a turn, or the prefix moves under
+// the server's cache the moment the user types again.
+
+/** The conditional the Qwen3.6 template guards its think blocks with. */
+const SUPPORTS = '{%- if (preserve_thinking is defined and preserve_thinking is true) %}';
+const NO_SUPPORT = '{%- for message in messages %}{{ message.content }}{%- endfor %}';
+
+/** The streamed turns only: the warm-up is a separate, deliberately bare request. */
+const turnsOf = (stub) => stub.chat.filter((b) => b.stream);
+const pinned = (b) => b.chat_template_kwargs?.preserve_thinking;
+
+test('a template that declares preserve_thinking gets it on every turn', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const turns = turnsOf(stub);
+  assert.equal(turns.length, 1);
+  for (const body of turns) assert.equal(pinned(body), true);
+
+  const [warmUp] = stub.chat.filter((b) => !b.stream);
+  assert.ok(warmUp, 'the warm-up still happens');
+  assert.ok(!('chat_template_kwargs' in warmUp),
+    'a throwaway one-token load has no thinking to preserve');
+});
+
+test('a template without preserve_thinking is not sent the field speculatively', async () => {
+  const stub = await startStub({ ids: [OTHER], template: NO_SUPPORT });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  for (const body of stub.chat) assert.ok(!('chat_template_kwargs' in body));
+});
+
+test('KRONK_PRESERVE_THINKING=false and the config-file key both suppress it', async () => {
+  const viaEnv = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const a = await cli(viaEnv, ['hello'], { env: { KRONK_PRESERVE_THINKING: 'false' } });
+  viaEnv.close();
+  assert.match(a.stdout, /STUB_OK/);
+  for (const body of viaEnv.chat) assert.ok(!('chat_template_kwargs' in body), 'env off');
+
+  const viaFile = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const b = await cli(viaFile, ['hello'], { rc: { preserveThinking: false } });
+  viaFile.close();
+  assert.match(b.stdout, /STUB_OK/);
+  for (const body of viaFile.chat) assert.ok(!('chat_template_kwargs' in body), 'rc off');
+
+  const dflt = await startStub({ ids: [OTHER], template: SUPPORTS });
+  await cli(dflt, ['hello']);
+  dflt.close();
+  assert.equal(pinned(turnsOf(dflt)[0]), true, 'on unless something turns it off');
+});
+
+test('--no-think leaves nothing to preserve, so the field is not sent', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS });
+  const out = await cli(stub, ['--no-think', 'hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const [turn] = turnsOf(stub);
+  assert.equal(turn.enable_thinking, false);
+  assert.ok(!('chat_template_kwargs' in turn));
+});
+
+test('a failed template lookup is inert: the session runs, the field is not guessed', async () => {
+  const stub = await startStub({ ids: [OTHER], template: SUPPORTS, modelInfoStatus: 500 });
+  const out = await cli(stub, ['hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/, 'detection failing must not stop the turn');
+  const [turn] = turnsOf(stub);
+  assert.equal(turn.model, OTHER);
+  assert.equal(turn.stream, true);
+  assert.ok(Array.isArray(turn.messages) && turn.messages.length >= 2, 'body still well formed');
+  for (const body of stub.chat) assert.ok(!('chat_template_kwargs' in body));
+});
+
+// ---- sampling override note --------------------------------------------
+//
+// `/kronk/models/{id}` carries both halves in one response: the model's own
+// GGUF sampling metadata (strings) and the effective sampling-parameters a
+// profile may have overridden (numbers). The pure comparison itself is
+// covered directly in test/client.test.js — these drive the whole CLI to
+// prove the boot path wires it up: printed once, under the banner, grey,
+// and only where the banner itself appears.
+
+/**
+ * Drive the CLI's truly interactive path: no inline prompt, stdin already at
+ * EOF. `execFile` (what `cli()` above uses) does not actually honour a
+ * `stdio` override on its own child — its stdin stays an open pipe no matter
+ * what is asked for, so `cli()` can only ever reach one-shot mode. `spawn`
+ * does honour it: stdin hits EOF immediately, `rl.question()` rejects with
+ * nothing to wait on, and the process exits on its own — same env setup as
+ * `cli()`, just launched directly.
+ */
+function interactive(stub, args = [], { env: extra = {} } = {}) {
+  const home = mkdtempSync(join(tmpdir(), 'kronk-home-'));
+  const env = { ...process.env, KRONK_URL: stub.url, HOME: home, NO_COLOR: '1' };
+  delete env.KRONK_MODEL;
+  delete env.KRONK_WARM;
+  delete env.KRONK_NO_THINK;
+  delete env.KRONK_PRESERVE_THINKING;
+  Object.assign(env, extra);
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, '--no-context', '--no-warm', ...args],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`interactive CLI did not exit on EOF; stdout so far:\n${stdout}`));
+    }, 10_000);
+    child.on('exit', () => { clearTimeout(timer); resolve({ stdout, stderr }); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+test('a profile that overrides the model prints exactly one grey note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 0.6, top_k: 20, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.match(out.stdout, /note {5}profile overrides the model's own sampling:/);
+  assert.match(out.stdout, /temperature 0\.6 \(model recommends 1\)/);
+  assert.ok(!/top_k|top_p/.test(out.stdout), 'only the parameter that actually differs is named');
+  assert.equal((out.stdout.match(/profile overrides the model's own sampling/g) ?? []).length, 1,
+    'one line however many parameters disagree');
+});
+
+test('two disagreeing parameters still produce a single line, not one each', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 0.6, top_k: 10, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.equal((out.stdout.match(/^ {2}note/gm) ?? []).length, 1, 'exactly one note line');
+  assert.match(out.stdout, /temperature 0\.6 \(model recommends 1\)/);
+  assert.match(out.stdout, /top_k 10 \(model recommends 20\)/);
+});
+
+test('a profile that matches the model produces no note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: {
+      'general.sampling.temp': '1', 'general.sampling.top_k': '20', 'general.sampling.top_p': '0.95',
+    },
+    samplingParameters: { temperature: 1, top_k: 20, top_p: 0.95 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'values agree — nothing to say');
+});
+
+test('a model with no sampling metadata at all produces no note line', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingParameters: { temperature: 0.6, top_k: 10, top_p: 0.5 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'no metadata to compare against is normal, not a warning');
+});
+
+test('a failing /kronk/models/{id} produces no note line and the session still proceeds', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    modelInfoStatus: 500,
+    samplingMetadata: { 'general.sampling.temp': '1' },
+    samplingParameters: { temperature: 0.6 },
+  });
+  const out = await interactive(stub);
+  stub.close();
+
+  assert.ok(!/note.*sampling/.test(out.stdout), 'the endpoint failing must not be mistaken for a difference');
+  // boot() must not throw or hang on the 500: the banner and the line after
+  // it (sandbox) both still print, and the session reaches the prompt.
+  assert.match(out.stdout, /kronk-cli/);
+  assert.match(out.stdout, /sandbox/);
+});
+
+test('one-shot mode prints nothing extra: the note follows the banner, and one-shot has no banner', async () => {
+  const stub = await startStub({
+    ids: [OTHER],
+    samplingMetadata: { 'general.sampling.temp': '1' },
+    samplingParameters: { temperature: 0.6 },
+  });
+  const out = await cli(stub, ['--no-warm', 'hello']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  assert.ok(!/note|sampling|kronk-cli/.test(out.stdout),
+    'one-shot mode prints only the answer — no banner, no note line');
+});
+
+test('every request of a tool loop carries it, not only the first', async (t) => {
+  const stub = await startStub({
+    ids: [OTHER],
+    template: SUPPORTS,
+    turns: [
+      { tool: ['list_dir', { path: '.' }] },
+      { tool: ['list_dir', { path: 'src' }] },
+      { text: 'STUB_OK' },
+    ],
+  });
+  const out = await cli(stub, ['look around']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/);
+  const turns = turnsOf(stub);
+  assert.equal(turns.length, 3, 'two tool steps and a final answer');
+  assert.deepEqual(turns.map(pinned), [true, true, true]);
+  assert.ok(turns[2].messages.some((m) => m.role === 'tool'),
+    'the later requests really are follow-ups, not repeats of the first');
+  t.diagnostic(`tool-loop requests: ${turns.length}`);
 });

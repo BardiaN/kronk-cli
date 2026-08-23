@@ -8,31 +8,22 @@ import { pickDefault, ensureLoaded } from './boot.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
 import { projectContext } from './context.js';
+import { forRequest } from './reasoning.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
+import { parseArgv } from './argv.js';
+import { runSetup } from './setup.js';
 
 // ---- argv -------------------------------------------------------------
-const argv = process.argv.slice(2);
-const flag = (...names) => {
-  const i = argv.findIndex((a) => names.includes(a));
-  if (i === -1) return false;
-  argv.splice(i, 1);
-  return true;
-};
-let AUTO_YES = flag('-y', '--yes');
-if (flag('--no-think')) config.noThink = true;
-// --auto: run the whole task unattended (implies --yes)
-const AUTO = flag('-a', '--auto');
-if (AUTO) AUTO_YES = true;
+const args = parseArgv(process.argv.slice(2));
+if (args.error) {
+  // A usage error is not a conversation: stderr, exit 2, nothing sent anywhere.
+  console.error(`\n${args.error}\n`);
+  process.exit(2);
+}
 
-const SHOW_MODELS = flag('--models', '-l', '--list');
-const SHOW_MCP = flag('--mcp-list');
-const NO_CONTEXT = flag('--no-context');
-if (flag('--no-compact')) config.autoCompact = false;
-if (flag('--no-warm')) config.warm = false;
-
-if (flag('-h', '--help')) {
+if (args.help) {
   console.log(`
   kronk-cli — a terminal agent for local models served by Kronk
 
@@ -40,6 +31,11 @@ if (flag('-h', '--help')) {
     kronk-cli                       start the interactive REPL
     kronk-cli "<prompt>"            run one prompt and exit
     <cmd> | kronk-cli "<prompt>"    pipe stdin in as extra context
+
+  SUBCOMMANDS
+    kronk-cli setup [--model <id>] [--context <n>] [-y] [--dry-run]
+                                    pull the model, write its /AGENT profile to
+                                    ~/.kronk/models/model_config.yaml, restart Kronk
 
   OPTIONS
     -l, --models        list the models Kronk is serving, then exit
@@ -55,14 +51,19 @@ if (flag('-h', '--help')) {
         --no-think      disable the model's reasoning pass (faster)
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
+        --              end option parsing; everything after is the prompt
 
   ENVIRONMENT
     KRONK_URL           default http://localhost:11435/v1
     KRONK_TOKEN         any non-empty value when Kronk runs open
     KRONK_MODEL         overrides the default model
+    KRONK_MODEL_CONFIG  path to Kronk's model_config.yaml, used by setup
     KRONK_MAX_TOKENS    output cap per response (default 8192)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
     KRONK_NO_THINK      set to 1 to disable reasoning
+    KRONK_PRESERVE_THINKING
+                        false to stop pinning earlier think blocks in the
+                        prompt (smaller prompts, cache lost on every turn)
     KRONK_WARM          false to skip the boot-time model preload
     KRONK_AUTO_COMPACT  false to disable automatic compaction
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
@@ -71,34 +72,22 @@ if (flag('-h', '--help')) {
 `);
   process.exit(0);
 }
-const opt = (name) => {
-  const i = argv.findIndex((a) => a === name);
-  if (i === -1) return null;
-  const v = argv[i + 1];
-  argv.splice(i, 2);
-  return v;
-};
-const modelArg = opt('--model') ?? opt('-m');
-if (modelArg) config.model = modelArg;
-// `--mcp` alone attaches everything configured; `--mcp nx,kronk` narrows it.
-let MCP_ON = false;
-let MCP_WANTED = null;
-{
-  const i = argv.findIndex((a) => a === '--mcp');
-  if (i !== -1) {
-    MCP_ON = true;
-    const next = argv[i + 1];
-    if (next && !next.startsWith('-')) {
-      MCP_WANTED = next.split(',').map((x) => x.trim()).filter(Boolean);
-      argv.splice(i, 2);
-    } else {
-      argv.splice(i, 1);
-    }
-  }
-}
 
-const stepsArg = opt('--steps');
-if (stepsArg) config.maxSteps = /^(0|off|none|inf|unlimited)$/i.test(stepsArg) ? Infinity : Number(stepsArg);
+// --auto: run the whole task unattended (implies --yes)
+const AUTO = args.auto;
+const AUTO_YES = args.yes || AUTO;
+const SHOW_MODELS = args.models;
+const SHOW_MCP = args.mcpList;
+const NO_CONTEXT = args.noContext;
+// `--mcp` alone attaches everything configured; `--mcp nx,kronk` narrows it.
+const MCP_ON = args.mcp;
+const MCP_WANTED = args.mcpNames;
+
+if (args.noThink) config.noThink = true;
+if (args.noCompact) config.autoCompact = false;
+if (args.noWarm) config.warm = false;
+if (args.model) config.model = args.model;
+if (args.steps !== null) config.maxSteps = args.steps;
 
 async function boot() {
   let ids;
@@ -137,9 +126,13 @@ async function boot() {
 
   if (config.warm) await ensureLoaded(ids);
 
-  const { configured, native } = await modelLimits(config.model);
+  const {
+    configured, native, preserveThinking, samplingDiff,
+  } = await modelLimits(config.model);
   config.contextWindow = configured;
   config.nativeContext = native;
+  config.templatePreservesThinking = preserveThinking;
+  config.samplingOverride = samplingDiff;
   return ids;
 }
 
@@ -320,7 +313,7 @@ async function oneShot(prompt) {
     return false;
   };
   try {
-    await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp });
+    await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: AUTO });
   } catch (e) {
     if (e.name !== 'AbortError') { console.error(c.red(`  ${e.message}`)); process.exitCode = 1; }
   } finally {
@@ -332,11 +325,28 @@ async function main() {
   // Before anything reaches the network, on every path through the program.
   warnIfInsecure();
 
+  // Subcommands are dispatched before the one-shot path below, so `setup` is
+  // never mistaken for a one-word prompt and sent to the model.
+  if (args.words[0] === 'setup') {
+    if (args.words.length > 1) {
+      console.error(`\n  setup takes no arguments — got: ${args.words.slice(1).join(' ')}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = await runSetup({
+      model: args.model,
+      context: args.context,
+      yes: args.yes,
+      dryRun: args.dryRun,
+    });
+    return;
+  }
+
   if (SHOW_MODELS) { await showModels(); return; }
   if (SHOW_MCP) { await showMcp(); process.exit(0); }
 
   // non-interactive: `kronk-cli "prompt"` or `echo prompt | kronk-cli`
-  const inline = argv.join(' ').trim();
+  const inline = args.words.join(' ').trim();
   // With an inline prompt, stdin is optional extra context — don't block on it.
   // Without one, stdin IS the prompt, so wait longer before giving up.
   const piped = await readStdin(inline ? 200 : 10_000);
@@ -356,6 +366,17 @@ async function main() {
   await boot();
   const { content, ctx } = await systemMessage(AUTO);
   console.log(banner(config.model, config.baseUrl));
+
+  // Information, not a failure: the profile is doing exactly what it was
+  // told to, it's just not what the model's own GGUF recommends. One-shot
+  // mode never reaches this line because it never prints the banner either.
+  if (config.samplingOverride) {
+    const named = config.samplingOverride
+      .map((d) => `${d.param} ${d.effective} (model recommends ${d.model})`)
+      .join(', ');
+    console.log(c.grey(`  note     profile overrides the model's own sampling: ${named}`));
+  }
+
   const mcp = await startMcp();
 
   if (ctx) {
@@ -375,6 +396,9 @@ async function main() {
     : c.grey(`paths + ${backend}`)}\n`);
 
   const messages = [{ role: 'system', content }];
+  // The system prompt is the one record of which mode we are in — /auto rewrites
+  // it — so both the status line and the turn read the answer from there.
+  const isAuto = () => messages[0].content.startsWith(SYSTEM_AUTO);
 
   // Ctrl-C aborts the in-flight request instead of killing the process.
   let ac = null;
@@ -393,9 +417,11 @@ async function main() {
   for (;;) {
     const status = statusLine({
       model: config.model,
-      auto: autoApprove && messages[0].content.startsWith(SYSTEM_AUTO),
+      auto: autoApprove && isAuto(),
       yes: autoApprove,
       noThink: config.noThink,
+      // Only news when the model could have had it and the user said no.
+      noPreserve: config.templatePreservesThinking && !config.noThink && !config.preserveThinking,
       mcp: mcp?.routes.size ? [...mcp.servers.keys()].join(',') : null,
       steps: config.maxSteps,
       used: config.lastUsed,
@@ -425,9 +451,8 @@ async function main() {
       continue;
     }
     if (input === '/auto') {
-      const now = !messages[0].content.startsWith(SYSTEM_AUTO);
-      const primer = messages[0].content.slice(
-        (messages[0].content.startsWith(SYSTEM_AUTO) ? SYSTEM_AUTO : SYSTEM).length);
+      const now = !isAuto();
+      const primer = messages[0].content.slice((isAuto() ? SYSTEM_AUTO : SYSTEM).length);
       messages[0] = { role: 'system', content: (now ? SYSTEM_AUTO : SYSTEM) + primer };
       autoApprove = now;
       console.log(c.grey(`  autonomous mode ${now ? 'on — tools auto-approved, runs to completion' : 'off'}`));
@@ -455,14 +480,18 @@ async function main() {
     if (input === '/compact') {
       if (messages.length < 2) { console.log(c.grey('  nothing to compact')); continue; }
       const sp = new AbortController();
-      const res = await compact(messages, { model: config.model, signal: sp.signal });
+      const res = await compact(messages, { model: config.model, signal: sp.signal, auto: isAuto() });
       if (res.failed) { console.log(c.red('  compaction produced nothing — conversation unchanged')); continue; }
       if (!res.skipped) messages.splice(0, messages.length, ...res.messages);
       console.log(report(res));
       continue;
     }
     if (input === '/context') {
-      const used = await tokenize(config.model, messages.map((m) => m.content ?? '').join('\n'));
+      // Count what the next request would actually carry, replayed reasoning
+      // included — the history holds reasoning that is never sent, and a meter
+      // that charged for it would read high for the whole session.
+      const used = await tokenize(config.model, forRequest(messages, isAuto())
+        .map((m) => `${m.reasoning_content ?? ''}${m.content ?? ''}`).join('\n'));
       console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
       console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`
         + (config.nativeContext ? ` · model supports up to ${config.nativeContext.toLocaleString()}` : '')));
@@ -495,7 +524,7 @@ async function main() {
     messages.push({ role: 'user', content: input });
     ac = new AbortController();
     try {
-      await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp });
+      await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: isAuto() });
     } catch (e) {
       if (e.name === 'AbortError') messages.push({ role: 'assistant', content: '(interrupted)' });
       else console.error(c.red(`\n  ${e.message}`));

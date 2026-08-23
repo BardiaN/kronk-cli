@@ -15,6 +15,11 @@ import { parseArgv } from './argv.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
+if (args.error) {
+  // A usage error is not a conversation: stderr, exit 2, nothing sent anywhere.
+  console.error(`\n${args.error}\n`);
+  process.exit(2);
+}
 
 if (args.help) {
   console.log(`

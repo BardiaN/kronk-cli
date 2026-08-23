@@ -137,8 +137,17 @@ const SCRIPT = [
 ];
 const FILLER_TOKENS = 5491;
 
-function startStub({ resident = [] } = {}) {
+/**
+ * `admitOnFirstRequest` mirrors what Kronk actually does: a model is admitted to
+ * the pool by its first inference request, so anything that talks to the model
+ * makes it resident. Without that, a static `resident: []` reports "not
+ * resident" forever and the cold-load section passes whatever order it runs in
+ * — which is precisely the bug that shipped. Leave it off for the tests that
+ * only care about arithmetic.
+ */
+function startStub({ resident = [], admitOnFirstRequest = false } = {}) {
   let call = 0;
+  const pool = new Set(resident);
   const send = (res, code, body) => {
     res.writeHead(code, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
@@ -147,9 +156,10 @@ function startStub({ resident = [] } = {}) {
   const server = createServer((req, res) => {
     const url = req.url.split('?')[0];
     if (url === '/v1/models') return send(res, 200, { object: 'list', data: [{ id: MODEL, object: 'model' }] });
-    if (url === '/v1/kronk/models/ps') return send(res, 200, resident.map((id) => ({ id, status: 'loaded' })));
+    if (url === '/v1/kronk/models/ps') return send(res, 200, [...pool].map((id) => ({ id, status: 'loaded' })));
     if (url === '/v1/tokenize') return send(res, 200, { tokens: FILLER_TOKENS });
     if (url === '/v1/chat/completions') {
+      if (admitOnFirstRequest) pool.add(MODEL);
       let raw = '';
       req.on('data', (d) => { raw += d; });
       return req.on('end', () => {
@@ -291,4 +301,31 @@ test('exits non-zero with the existing "Cannot reach Kronk at" message when noth
       return true;
     },
   );
+});
+
+// The regression that shipped: the cold load was measured after the generation
+// and cache sections, both of which admit the model, so its residency check
+// could never be false and the section printed `skipped` on every run. These
+// two assert the ORDERING, not merely that the branch exists — with a stub that
+// admits on first request, only measuring cold load first can produce a number.
+test('a model that is not resident at start gets a real cold-load number', async () => {
+  const stub = await startStub({ resident: [], admitOnFirstRequest: true });
+  try {
+    const { stdout } = await bench(stub.url, ['--json']);
+    const report = JSON.parse(stdout);
+    assert.equal(report.coldLoad.skipped, false,
+      'cold load must be measured before anything else admits the model');
+    assert.equal(typeof report.coldLoad.seconds, 'number');
+    assert.ok(report.coldLoad.seconds >= 0);
+  } finally { await stub.close(); }
+});
+
+test('a model the operator left resident still skips, even though the stub admits on request', async () => {
+  const stub = await startStub({ resident: [MODEL], admitOnFirstRequest: true });
+  try {
+    const { stdout } = await bench(stub.url, ['--json']);
+    const report = JSON.parse(stdout);
+    assert.equal(report.coldLoad.skipped, true);
+    assert.match(report.coldLoad.reason, /already resident/);
+  } finally { await stub.close(); }
 });

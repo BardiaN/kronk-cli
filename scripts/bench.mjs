@@ -273,11 +273,18 @@ async function main() {
   const model = config.model ?? DEFAULT_MODEL;
   const [kronkVersion, llamaCppVersion] = await Promise.all([kronkCliVersion(), llamaCppBuildVersion()]);
 
+  // Measured first, printed last. Kronk admits a model on its first inference
+  // request, so anything that talks to the model loads it. Run this after the
+  // generation section and the residency check inside it can never be false —
+  // the section reported `skipped` on every run, describing a state its own
+  // earlier requests had created. A model the operator left resident is still a
+  // real skip; that is the case the check exists for.
+  const coldLoad = await runColdLoad(model, skipColdLoad);
+
   const generation = [];
   for (let i = 0; i < GEN_RUNS; i++) generation.push(await runGeneration(model));
 
   const cache = await runCacheRetention(model);
-  const coldLoad = await runColdLoad(model, skipColdLoad);
 
   const report = buildReport({ meta: { model, kronkVersion, llamaCppVersion }, generation, cache, coldLoad });
   console.log(jsonOut ? JSON.stringify(report, null, 2) : renderTable(report));

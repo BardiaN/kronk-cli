@@ -28,24 +28,32 @@ set -uo pipefail
 timeout_seconds="${RELEASE_WAIT_TIMEOUT_SECONDS:-600}"
 interval_seconds="${RELEASE_WAIT_INTERVAL_SECONDS:-15}"
 
-# Default to scoring. Only a confirmed release failure below flips this to
-# false — a timeout or any other uncertainty falls back to today's behaviour,
-# so a bug in this script can never be the reason a legitimate scan is dropped.
-echo "proceed=true" >> "$GITHUB_OUTPUT"
+# Default to scoring. Only a confirmed release failure calls `finish false` —
+# a timeout or any other uncertainty falls back to today's behaviour, so a bug
+# in this script can never be the reason a legitimate scan is dropped.
+#
+# Written exactly once, on every exit path. Actions resolves a duplicated
+# output key to the last one written, so emitting a default up front and
+# overriding it later would also work — but this is the decision that stops a
+# failed release being scored, and it should not rest on that subtlety.
+finish() {
+  echo "proceed=$1" >> "$GITHUB_OUTPUT"
+  exit 0
+}
 
 if [ "${GITHUB_EVENT_NAME:-}" != "push" ]; then
   echo "not a push event (${GITHUB_EVENT_NAME:-unset}) — nothing to wait for"
-  exit 0
+  finish true
 fi
 
 version=$(node -p "require('./package.json').version" 2>/dev/null) || {
   echo "could not read package.json version — scoring current state"
-  exit 0
+  finish true
 }
 
 if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" >/dev/null 2>&1; then
   echo "v${version} is already tagged — ordinary push, not waiting on a release"
-  exit 0
+  finish true
 fi
 echo "v${version} has no tag yet — this push should produce a release; waiting for it"
 
@@ -67,11 +75,12 @@ done
 
 if [ -z "$conclusion" ]; then
   echo "::warning::timed out after ${timeout_seconds}s waiting for the release workflow — scoring current state anyway"
-  exit 0
+  finish true
 fi
 
 echo "release workflow finished with conclusion: $conclusion"
 if [ "$conclusion" != "success" ]; then
   echo "release did not succeed — skipping this scan so it does not score partial artifacts"
-  echo "proceed=false" >> "$GITHUB_OUTPUT"
+  finish false
 fi
+finish true

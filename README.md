@@ -455,6 +455,38 @@ as before.
 
 ---
 
+## Sampling override warning
+
+The same startup lookup that finds the context window also carries the model's own sampling
+recommendations — `general.sampling.temp`, `top_k` and `top_p`, straight from the GGUF — next
+to the effective `sampling-parameters` Kronk is actually applying once any profile has been
+merged in. `kronk-cli` compares the two and, if a profile is overriding what the model ships,
+says so in one grey line under the startup banner:
+
+```console
+$ kronk-cli
+  ██ kronk-cli  · local agent, no network
+  model  unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT
+  server http://localhost:11435/v1
+  /help for commands · Ctrl-C to interrupt · /exit to quit
+
+  note     profile overrides the model's own sampling: temperature 0.6 (model recommends 1)
+```
+
+One line, however many of the three parameters disagree — not one per parameter. It stays
+silent when the values agree, when the model ships no `general.sampling.*` metadata at all, or
+when the model-info lookup fails: this is information, not a failure, and it never blocks,
+prompts, or changes the exit code.
+
+**The fix** is the one described in [Tip: use an `/AGENT` profile](#tip-use-an-agent-profile):
+remove `temperature`, `top_k` and `top_p` from the profile's `sampling-parameters` block so
+Kronk applies what the model itself recommends.
+
+Like the rest of the banner, the line is part of the interactive REPL's startup — a one-shot
+run (`kronk-cli "prompt"`) prints no banner and prints nothing here either.
+
+---
+
 ## Command-line options
 
 | Flag | Default | |
@@ -625,7 +657,8 @@ models:
 their authors recommend, Kronk reads them, and an explicit block only overrides the model's own
 advice. This model ships `general.sampling.temp: 1`, `top_k: 20`, `top_p: 0.95`; an earlier
 version of this page recommended `temperature: 0.6`, which quietly fought that. Check what your
-model carries with `kronk model show <id> --local`.
+model carries with `kronk model show <id> --local`. If a profile does pin one of these,
+`kronk-cli` says so at startup — see [Sampling override warning](#sampling-override-warning).
 
 `preserve_thinking` earns its place in an agent profile. The chat template decides per assistant
 message whether to render its `<think>` block, and the decision depends on which user message is

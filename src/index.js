@@ -125,10 +125,13 @@ async function boot() {
 
   if (config.warm) await ensureLoaded(ids);
 
-  const { configured, native, preserveThinking } = await modelLimits(config.model);
+  const {
+    configured, native, preserveThinking, samplingDiff,
+  } = await modelLimits(config.model);
   config.contextWindow = configured;
   config.nativeContext = native;
   config.templatePreservesThinking = preserveThinking;
+  config.samplingOverride = samplingDiff;
   return ids;
 }
 
@@ -362,6 +365,17 @@ async function main() {
   await boot();
   const { content, ctx } = await systemMessage(AUTO);
   console.log(banner(config.model, config.baseUrl));
+
+  // Information, not a failure: the profile is doing exactly what it was
+  // told to, it's just not what the model's own GGUF recommends. One-shot
+  // mode never reaches this line because it never prints the banner either.
+  if (config.samplingOverride) {
+    const named = config.samplingOverride
+      .map((d) => `${d.param} ${d.effective} (model recommends ${d.model})`)
+      .join(', ');
+    console.log(c.grey(`  note     profile overrides the model's own sampling: ${named}`));
+  }
+
   const mcp = await startMcp();
 
   if (ctx) {

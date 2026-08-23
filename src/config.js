@@ -45,6 +45,7 @@ export const config = {
   contextWindow: null,   // filled in at boot from Kronk
   nativeContext: null,
   templatePreservesThinking: false,   // filled in at boot from the model's template
+  samplingOverride: null,   // filled in at boot: params where the profile overrides the model's own
   rcPath: RC,
 };
 

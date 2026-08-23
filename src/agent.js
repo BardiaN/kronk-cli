@@ -1,7 +1,7 @@
 import { streamChat } from './client.js';
 import { TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval } from './tools.js';
 import { config } from './config.js';
-import { c, fmtUsage, spinner, liveLine } from './ui.js';
+import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
 
@@ -180,9 +180,8 @@ export async function runTurn({ messages, model, signal, approve, mcp, maxSteps 
         model, signal, command: args.cmd ?? describe(call.name, args),
       });
       const failed = result.startsWith('error:');
-      console.log(failed
-        ? c.red(`  ✗ ${result.split('\n')[0]}`)
-        : c.grey(`  ✓ ${result.split('\n').length} lines`));
+      if (failed) toolResultLines(result).forEach((l) => console.log(l));
+      else console.log(c.grey(`  ✓ ${result.split('\n').length} lines`));
       messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     }
     // loop: the model now sees the tool output

@@ -2,7 +2,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
-const RC = join(homedir(), '.kronk-cli.json');
+// KRONK_CONFIG exists so tests never touch the real file. Everything here is
+// read at module load, so a test that sets it must `await import()` rather than
+// use a static import — a static one is hoisted and runs before the assignment.
+const RC = process.env.KRONK_CONFIG ?? join(homedir(), '.kronk-cli.json');
 const MODEL_CONFIG = join(homedir(), '.kronk', 'models', 'model_config.yaml');
 
 function fileConfig() {
@@ -56,6 +59,12 @@ export const config = {
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,
+  // Paths a previous session granted read-only to the sandbox, via `always` at
+  // the credential prompt. Read-only is the whole point: KRONK_SANDBOX_ALLOW
+  // grants writes as well, and these are credential stores.
+  sandboxReadable: (Array.isArray(file.sandboxReadable) ? file.sandboxReadable : [])
+    .filter((p) => typeof p === 'string' && p.trim())
+    .map((p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)),
   lastUsed: 0,
   contextWindow: null,   // filled in at boot from Kronk
   nativeContext: null,

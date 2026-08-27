@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { CREDENTIAL_TOOLS, credentialPaths, session, ungranted } from '../src/tools.js';
+import {
+  CREDENTIAL_TOOLS, credentialPaths, declineGrants, grantsNeeded, rememberGrants, session, ungranted,
+} from '../src/tools.js';
+import { config } from '../src/config.js';
 
 const HOME = '/h';
 const KEYCHAIN = join(HOME, 'Library', 'Keychains');
@@ -105,5 +108,112 @@ test('declining is remembered separately from granting', () => {
   withSession({ declined: [KEYCHAIN] }, () => {
     assert.ok(session.declined.has(KEYCHAIN));
     assert.ok(!session.grants.has(KEYCHAIN));
+  });
+});
+
+// ── asked once per path per session ───────────────────────────────────────────
+
+test('granting a path stops it being asked about again', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kc-'));
+  mkdirSync(join(home, 'Library', 'Keychains'), { recursive: true });
+  const opts = { home, backend: 'seatbelt' };
+
+  withSession({}, () => {
+    assert.equal(grantsNeeded('gh pr list', opts).length, 1, 'first command asks');
+    rememberGrants(grantsNeeded('gh pr list', opts));
+    assert.deepEqual(grantsNeeded('gh issue list', opts), [], 'the second must not');
+  });
+});
+
+test('declining a path also stops it being asked about again', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kc-'));
+  mkdirSync(join(home, 'Library', 'Keychains'), { recursive: true });
+  const opts = { home, backend: 'seatbelt' };
+
+  withSession({}, () => {
+    const needed = grantsNeeded('gh pr list', opts);
+    assert.equal(needed.length, 1);
+    declineGrants(needed);
+    // Still denied, still ungranted — but not asked about, which is the point.
+    assert.equal(ungranted('gh issue list', opts).length, 1);
+    assert.deepEqual(grantsNeeded('gh issue list', opts), []);
+  });
+});
+
+test('granting after a decline clears the decline', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kc-'));
+  const keychain = join(home, 'Library', 'Keychains');
+  mkdirSync(keychain, { recursive: true });
+
+  withSession({ declined: [keychain] }, () => {
+    rememberGrants([keychain]);
+    assert.ok(session.grants.has(keychain));
+    assert.ok(!session.declined.has(keychain), 'a later yes must win over an earlier no');
+  });
+});
+
+// ── persistence ───────────────────────────────────────────────────────────────
+
+/** Point config.rcPath at a scratch file for one test. */
+function withRc(contents, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'kc-rc-'));
+  const file = join(dir, '.kronk-cli.json');
+  if (contents !== null) writeFileSync(file, contents);
+  const prev = config.rcPath;
+  config.rcPath = file;
+  try { return fn(file); } finally { config.rcPath = prev; }
+}
+
+test('always writes sandboxReadable without discarding other keys', () => {
+  withRc(JSON.stringify({ model: 'some/model', maxTokens: 4096 }), (file) => {
+    withSession({}, () => {
+      const wrote = rememberGrants(['/h/Library/Keychains'], { persist: true, home: '/h' });
+      assert.equal(wrote, file);
+      const saved = JSON.parse(readFileSync(file, 'utf8'));
+      assert.deepEqual(saved.sandboxReadable, ['~/Library/Keychains'], 'stored ~-relative');
+      assert.equal(saved.model, 'some/model', 'an unrelated key must survive');
+      assert.equal(saved.maxTokens, 4096);
+    });
+  });
+});
+
+test('always merges with what is already there, without duplicating', () => {
+  withRc(JSON.stringify({ sandboxReadable: ['~/Library/Keychains', '~/.other'] }), (file) => {
+    withSession({}, () => {
+      rememberGrants(['/h/Library/Keychains'], { persist: true, home: '/h' });
+      const saved = JSON.parse(readFileSync(file, 'utf8'));
+      assert.deepEqual(saved.sandboxReadable, ['~/Library/Keychains', '~/.other']);
+    });
+  });
+});
+
+test('a missing config file is created, not treated as an error', () => {
+  withRc(null, (file) => {
+    withSession({}, () => {
+      rememberGrants(['/h/Library/Keychains'], { persist: true, home: '/h' });
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).sandboxReadable,
+        ['~/Library/Keychains']);
+    });
+  });
+});
+
+test('an unparseable config file is left alone and reported', () => {
+  withRc('{ this is not json', (file) => {
+    withSession({}, () => {
+      assert.throws(() => rememberGrants(['/h/Library/Keychains'], { persist: true, home: '/h' }),
+        /not valid JSON/);
+      assert.equal(readFileSync(file, 'utf8'), '{ this is not json', 'the file is untouched');
+      // The grant still applies to this session — persistence is the bonus.
+      assert.ok(session.grants.has('/h/Library/Keychains'));
+    });
+  });
+});
+
+test('answering yes rather than always persists nothing', () => {
+  withRc(null, (file) => {
+    withSession({}, () => {
+      assert.equal(rememberGrants(['/h/Library/Keychains'], { home: '/h' }), null);
+      assert.equal(existsSync(file), false, 'a session grant must not touch the config file');
+    });
   });
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { config, DEFAULT_MODEL, warnIfInsecure } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
@@ -76,6 +77,9 @@ if (args.help) {
 // --auto: run the whole task unattended (implies --yes)
 const AUTO = args.auto;
 const AUTO_YES = args.yes || AUTO;
+
+/** `~/Library/Keychains` reads better than the absolute path in a prompt. */
+const tilde = (p) => (p.startsWith(`${homedir()}/`) ? `~/${p.slice(homedir().length + 1)}` : p);
 const SHOW_MODELS = args.models;
 const SHOW_MCP = args.mcpList;
 const NO_CONTEXT = args.noContext;
@@ -312,8 +316,21 @@ async function oneShot(prompt) {
     console.log(c.yellow(`  ✗ ${name} needs approval; re-run with --yes to allow it`));
     return false;
   };
+
+  // Nobody is here to answer, and this mode already auto-approves everything
+  // else. Granting silently would reproduce the exact failure #21 is about —
+  // `gh` reporting a broken login — in the mode where it is hardest to notice,
+  // so it is announced. On stderr, so a piped stdout still carries only the
+  // answer.
+  const grant = async (binary, paths) => {
+    if (!AUTO_YES) return 'no';
+    console.error(c.grey(`  granted read-only ${paths.map(tilde).join(', ')} to ${binary} (--yes)`));
+    return 'yes';
+  };
   try {
-    await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: AUTO });
+    await runTurn({
+      messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: AUTO,
+    });
   } catch (e) {
     if (e.name !== 'AbortError') { console.error(c.red(`  ${e.message}`)); process.exitCode = 1; }
   } finally {
@@ -412,6 +429,21 @@ async function main() {
     if (autoApprove) return true;
     const a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase();
     return a === 'y' || a === 'yes';
+  };
+
+  // Read-only, and said so: the answer to "why is my gh broken" should not be a
+  // flag you had to know about before you started. `always` writes the path to
+  // ~/.kronk-cli.json so the next session does not ask.
+  const grant = async (binary, paths) => {
+    if (autoApprove) {
+      console.error(c.grey(`  granted read-only ${paths.map(tilde).join(', ')} to ${binary} (--yes)`));
+      return 'yes';
+    }
+    console.log(c.yellow(`  ${binary} reads ${paths.map(tilde).join(', ')}, which the sandbox denies.`));
+    const a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] ')))
+      .trim().toLowerCase();
+    if (a === 'always' || a === 'a') return 'always';
+    return a === 'y' || a === 'yes' ? 'yes' : 'no';
   };
 
   for (;;) {
@@ -524,7 +556,9 @@ async function main() {
     messages.push({ role: 'user', content: input });
     ac = new AbortController();
     try {
-      await runTurn({ messages, model: config.model, signal: ac.signal, approve, mcp, auto: isAuto() });
+      await runTurn({
+        messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: isAuto(),
+      });
     } catch (e) {
       if (e.name === 'AbortError') messages.push({ role: 'assistant', content: '(interrupted)' });
       else console.error(c.red(`\n  ${e.message}`));

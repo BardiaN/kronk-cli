@@ -2,7 +2,7 @@ import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:path';
-import { realpathSync, mkdirSync, existsSync } from 'node:fs';
+import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { config } from './config.js';
@@ -67,18 +67,23 @@ export const CREDENTIAL_TOOLS = {
  * `echo gh` must not match — `gh` is an argument there, not the command — and
  * neither must `mygh`, which is why the first token is compared whole.
  */
-export function credentialPaths(cmd, home = homedir()) {
-  const hits = new Set();
+export function credentialMatches(cmd, home = homedir()) {
+  const hits = new Map();
   for (const segment of String(cmd ?? '').split(/[;&|\n]+/)) {
     const tokens = segment.trim().split(/\s+/).filter(Boolean);
     let i = 0;
     while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
-    const bin = tokens[i];
-    if (!bin) continue;
-    const paths = CREDENTIAL_TOOLS[basename(bin)];
-    if (paths) for (const rel of paths) hits.add(join(home, rel));
+    if (!tokens[i]) continue;
+    const bin = basename(tokens[i]);
+    const paths = CREDENTIAL_TOOLS[bin];
+    if (paths && !hits.has(bin)) hits.set(bin, paths.map((rel) => join(home, rel)));
   }
-  return [...hits];
+  return [...hits].map(([bin, paths]) => ({ bin, paths }));
+}
+
+/** Just the paths, deduplicated across however many tools matched. */
+export function credentialPaths(cmd, home = homedir()) {
+  return [...new Set(credentialMatches(cmd, home).flatMap((m) => m.paths))];
 }
 
 /**
@@ -91,6 +96,55 @@ export function ungranted(cmd, { home = homedir(), backend = sandbox.backend } =
   if (backend === 'none' || backend === 'pending') return [];
   return credentialPaths(cmd, home)
     .filter((p) => !session.grants.has(p) && existsSync(p));
+}
+
+/**
+ * What this command would need asking about: denied, not granted, and not
+ * already refused this session. Empty means say nothing and run it.
+ *
+ * `declined` is filtered here rather than at the call site so that "ask at most
+ * once per path per session" is one rule in one place, true of a refusal
+ * exactly as it is of a grant.
+ */
+export function grantsNeeded(cmd, opts = {}) {
+  return ungranted(cmd, opts).filter((p) => !session.declined.has(p));
+}
+
+/**
+ * Record a grant, and optionally remember it past this session.
+ *
+ * Persisting is a read-modify-write of `~/.kronk-cli.json` rather than a
+ * rewrite: the file is the user's, and it holds their model, their base URL and
+ * whatever else they have set. Losing those to record a keychain path would be
+ * a bad trade for a convenience feature. A file that cannot be parsed is left
+ * alone and reported, never silently replaced.
+ *
+ * Returns the path written to, or null when nothing was persisted.
+ */
+export function rememberGrants(paths, { persist = false, home = homedir() } = {}) {
+  for (const p of paths) {
+    session.grants.add(p);
+    session.declined.delete(p);
+  }
+  if (!persist || !paths.length) return null;
+
+  const tilde = (p) => (p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
+  let current = {};
+  try { current = JSON.parse(readFileSync(config.rcPath, 'utf8')); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw new Error(`${config.rcPath} is not valid JSON — leaving it alone`, { cause: e });
+  }
+  const merged = [...new Set([
+    ...(Array.isArray(current.sandboxReadable) ? current.sandboxReadable : []),
+    ...paths.map(tilde),
+  ])];
+  writeFileSync(config.rcPath, `${JSON.stringify({ ...current, sandboxReadable: merged }, null, 2)}\n`);
+  return config.rcPath;
+}
+
+/** Remember a refusal, so the same command does not ask again this session. */
+export function declineGrants(paths) {
+  for (const p of paths) session.declined.add(p);
 }
 
 /**

@@ -29,6 +29,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test test/*.test.js",
+    "changelog": "node scripts/changelog.mjs",
     "lint": "eslint .",
     "check": "npm run lint && npm test"
   },

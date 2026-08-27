@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  CREDENTIAL_TOOLS, credentialPaths, declineGrants, grantsNeeded, rememberGrants, session, ungranted,
+  CREDENTIAL_TOOLS, credentialHint, credentialPaths, declineGrants, grantsNeeded, rememberGrants,
+  resolveSandbox, runBash, session, ungranted,
 } from '../src/tools.js';
 import { config } from '../src/config.js';
 
@@ -216,4 +217,86 @@ test('answering yes rather than always persists nothing', () => {
       assert.equal(existsSync(file), false, 'a session grant must not touch the config file');
     });
   });
+});
+
+// ── the failure hint ──────────────────────────────────────────────────────────
+//
+// The criterion most likely to be got wrong, and the one worth the most: the
+// hint must be silent on ordinary failures. SECRET_FILES are denied
+// unconditionally under any active backend, so "something is denied" is always
+// true and would make this fire on every failing build.
+
+function withKeychainHome(fn) {
+  const home = mkdtempSync(join(tmpdir(), 'kc-'));
+  mkdirSync(join(home, 'Library', 'Keychains'), { recursive: true });
+  return fn(home, { home, backend: 'seatbelt' });
+}
+
+test('a failing credential command gets the hint', () => {
+  withKeychainHome((home, opts) => {
+    withSession({}, () => {
+      const hint = credentialHint('gh auth status', opts);
+      assert.match(hint, /^note: the sandbox denies reads of ~\/Library\/Keychains/);
+      assert.match(hint, /which gh uses/);
+      assert.match(hint, /Re-run and allow it/);
+    });
+  });
+});
+
+test('a failing ordinary command gets NO hint', () => {
+  withKeychainHome((home, opts) => {
+    withSession({}, () => {
+      for (const cmd of ['npm test', 'make build', 'node x.js', 'echo gh', 'cargo test']) {
+        assert.equal(credentialHint(cmd, opts), null, cmd);
+      }
+    });
+  });
+});
+
+test('a credential command with the grant already in place gets no hint', () => {
+  withKeychainHome((home, opts) => {
+    withSession({ grants: [join(home, 'Library', 'Keychains')] }, () => {
+      assert.equal(credentialHint('gh auth status', opts), null);
+    });
+  });
+});
+
+test('with the sandbox off nothing is denied, so there is no hint', () => {
+  withKeychainHome((home) => {
+    withSession({}, () => {
+      assert.equal(credentialHint('gh auth status', { home, backend: 'none' }), null);
+    });
+  });
+});
+
+// A decline means "do not ask me again", not "stop telling me why it failed" —
+// otherwise declining once hides the reason for every later failure.
+test('a declined path still produces the hint', () => {
+  withKeychainHome((home, opts) => {
+    withSession({ declined: [join(home, 'Library', 'Keychains')] }, () => {
+      assert.ok(credentialHint('gh auth status', opts));
+    });
+  });
+});
+
+test('the hint never advises the read-write escape hatch', () => {
+  withKeychainHome((home, opts) => {
+    withSession({}, () => {
+      assert.ok(!credentialHint('gh auth status', opts).includes('KRONK_SANDBOX_ALLOW'));
+    });
+  });
+});
+
+test('the hint sits with the error, above the output a cap would cut', async () => {
+  // Real command, real failure, real sandbox — but only where one exists.
+  const backend = resolveSandbox();
+  const out = await runBash('gh auth status', { timeoutMs: 20_000 });
+  const lines = out.split('\n');
+  const hintAt = lines.findIndex((l) => l.startsWith('note: the sandbox denies reads'));
+
+  if (backend === 'none' || hintAt === -1) return;   // nothing denied here to hint about
+  assert.ok(lines[0].startsWith('error:'), 'the error still leads');
+  assert.ok(hintAt <= 3, `the hint must sit near the top, was line ${hintAt}`);
+  assert.ok(lines.slice(0, hintAt).some((l) => l.startsWith('ran in:')),
+    'it comes after ran in:, not before');
 });

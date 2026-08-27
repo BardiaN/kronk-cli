@@ -310,6 +310,31 @@ function applyCwd(out, mark) {
   return { body, pwd: next, escaped };
 }
 
+/**
+ * One line telling the model that a sandbox denial is the likely cause, when it
+ * actually is.
+ *
+ * The gate is narrow on purpose: this fires only when the failing command named
+ * a tool in CREDENTIAL_TOOLS *and* the path it needs is still ungranted.
+ * Loosening it to "the sandbox denies something" would fire on every failing
+ * `npm test` and every failing build, because SECRET_FILES are denied
+ * unconditionally under any active backend — something is always denied. A hint
+ * that appears on every failure teaches the model to blame the sandbox for
+ * ordinary bugs, which is worse than no hint at all.
+ *
+ * KRONK_SANDBOX_ALLOW is deliberately not suggested here. It is the read-write
+ * hatch the grant prompt exists to replace.
+ */
+export function credentialHint(cmd, opts = {}) {
+  const denied = ungranted(cmd, opts);
+  if (!denied.length) return null;
+  const home = opts.home ?? homedir();
+  const tilde = (p) => (p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
+  const match = credentialMatches(cmd, home).find((m) => m.paths.some((p) => denied.includes(p)));
+  return `note: the sandbox denies reads of ${denied.map(tilde).join(', ')}, which `
+    + `${match?.bin ?? 'this command'} uses. Re-run and allow it if this failed on credentials.`;
+}
+
 /** The directory a command ran in, and a warning when that was outside the root. */
 function whereLines(pwd, escaped) {
   const ran = pwd ? `ran in: ${pwd}` : `ran in: ${session.cwd} (final directory unknown)`;
@@ -468,13 +493,19 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
         err.trim() && `stderr:\n${err.trim()}`,
       ].filter(Boolean).join('\n\n');
 
+      // Right after `error:` and `ran in:`, never appended at the end: the tool
+      // result is capped for display, and a hint below the cap is a hint the
+      // reader never sees.
+      const hint = credentialHint(cmd);
+
       if (timedOut) {
         return resolve(clip([
           `error: killed after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s).`,
           'The command may simply be slow — re-run a narrower scope, or raise KRONK_TOOL_TIMEOUT.',
           ...where,
+          hint,
           tail || '(no output before it was killed)',
-        ].join('\n')));
+        ].filter(Boolean).join('\n')));
       }
       if (code === 0) {
         const okBody = clip(body + err);
@@ -489,6 +520,7 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
           ? `error: killed by ${signal} after ${secs}s`
           : `error: exit code ${code} after ${secs}s`,
         ...where,
+        hint,
         tail || '(no output)',
         truncated ? '[earlier output dropped]' : '',
       ].filter(Boolean).join('\n')));

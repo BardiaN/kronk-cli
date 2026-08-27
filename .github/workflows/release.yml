@@ -85,10 +85,16 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          # Deliberately no `cache: npm`: the cache step writes an .npmrc that
-          # can shadow the OIDC credential. This used to be expressed as
-          # `package-manager-cache: false`, which setup-node does not accept —
-          # it warned "Unexpected input(s)" on every release and did nothing.
+          # No caching in the job that publishes: the cache step writes an
+          # .npmrc that can shadow the OIDC credential trusted publishing
+          # depends on. Omitting `cache:` was enough on setup-node v4, but v5
+          # turned caching on by default whenever package.json carries a
+          # `packageManager` field, so silence is no longer a decision — the
+          # first person to add that field would re-enable the cache here and
+          # break the release. v5 also added the `package-manager-cache` input
+          # this comment once said did not exist, so the intent can now be
+          # stated outright rather than implied by an absent line.
+          package-manager-cache: false
       - run: npm ci
       # Trusted publishing: npm mints a short-lived credential from the OIDC
       # token above, so there is no NPM_TOKEN in this repository at all. The

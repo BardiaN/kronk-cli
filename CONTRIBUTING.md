@@ -74,8 +74,28 @@ yet, and skips otherwise. That makes releasing a two-step flow:
 
 1. A feature or fix PR merges without touching `version` in `package.json`. This is the normal
    case — most PRs stop here.
-2. A separate release commit bumps `version` and merges on its own. That merge is what trips the
-   `gate` job and cuts the tag, publishes to npm, and creates the GitHub Release.
+2. A separate release commit bumps `version`, runs `npm run changelog`, and merges on its own.
+   That merge is what trips the `gate` job and cuts the tag, publishes to npm, and creates the
+   GitHub Release.
+
+`npm run changelog` regenerates `CHANGELOG.md` from the commit subjects, which is why the
+convention above is worth keeping. Run it in the release commit, after the version bump, and
+commit what it writes — `release.yml` reads that file for the GitHub Release body and fails the
+release before tagging if it has no entry for the version being shipped.
+
+Two things about it worth knowing before you are surprised by them:
+
+- **Already-published sections are frozen.** Regenerating only rewrites the release being
+  prepared. A shipped entry lists one line per commit that went into it, and those commits are no
+  longer individually reachable once the pull request is squashed — re-rendering would replace the
+  list with the squash subject and lose the detail for good.
+- **Nothing is filtered.** A subject that is not a conventional commit still appears, under
+  *Other changes*. A changelog that silently drops what it cannot classify is worse than one with
+  an ugly line in it, because only the second kind tells you it happened.
+
+`CHANGELOG.md` is deliberately **not** in the published npm tarball. `package.json`'s `files`
+allowlist decides that, and `security.yml` asserts on the result; the changelog is repository and
+release metadata, and it is already on the GitHub Release for anyone who wants it.
 
 Don't bump `version` in a feature or fix PR — it will be rejected. If your change is CI- or
 docs-only, its commits use the matching type (`ci:`, `docs:`) and the PR still doesn't touch the

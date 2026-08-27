@@ -13,3 +13,14 @@ updates:
     schedule: { interval: weekly }
     labels: [dependencies, ci]
     commit-message: { prefix: "ci" }
+    # The default of 5 is one short of what this repo actually pins. When six
+    # actions were behind at once, five got a pull request and codeql-action's
+    # init/analyze silently got none — leaving the scan itself on the old major
+    # while only upload-sarif was offered the new one.
+    open-pull-requests-limit: 10
+    groups:
+      # init, analyze and upload-sarif are three paths into one repository and
+      # share a version. Dependabot treats them as three dependencies and would
+      # otherwise raise three pull requests that must all land, or none.
+      codeql-action:
+        patterns: ["github/codeql-action*"]

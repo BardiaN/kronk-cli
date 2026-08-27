@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       tag: ${{ steps.check.outputs.tag }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,8 +49,8 @@ jobs:
     if: needs.gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 24, cache: npm }
       - run: npm ci
       - run: npm run lint
@@ -62,7 +62,7 @@ jobs:
     permissions:
       contents: write        # create the tag this release is named for
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: tag the release commit
         env:
           TAG: ${{ needs.gate.outputs.tag }}
@@ -80,15 +80,21 @@ jobs:
       contents: read
       id-token: write        # trusted publishing
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          # Deliberately no `cache: npm`: the cache step writes an .npmrc that
-          # can shadow the OIDC credential. This used to be expressed as
-          # `package-manager-cache: false`, which setup-node does not accept —
-          # it warned "Unexpected input(s)" on every release and did nothing.
+          # No caching in the job that publishes: the cache step writes an
+          # .npmrc that can shadow the OIDC credential trusted publishing
+          # depends on. Omitting `cache:` was enough on setup-node v4, but v5
+          # turned caching on by default whenever package.json carries a
+          # `packageManager` field, so silence is no longer a decision — the
+          # first person to add that field would re-enable the cache here and
+          # break the release. v5 also added the `package-manager-cache` input
+          # this comment once said did not exist, so the intent can now be
+          # stated outright rather than implied by an absent line.
+          package-manager-cache: false
       - run: npm ci
       # Trusted publishing: npm mints a short-lived credential from the OIDC
       # token above, so there is no NPM_TOKEN in this repository at all. The
@@ -108,7 +114,7 @@ jobs:
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: compute tarball hash
         id: hash
         env:
@@ -134,7 +140,7 @@ jobs:
       # A signed statement tying this artifact to this repo, commit and workflow.
       # `gh attestation verify` checks it without trusting the registry.
       - id: attest
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "*.tgz"
 
@@ -164,7 +170,7 @@ jobs:
           test -s "${tgz}.intoto.jsonl"
           jq -e '.payload and (.signatures | length > 0)' "${tgz}.intoto.jsonl" > /dev/null
 
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           # The run is on a branch, so the tag has to be named explicitly.
           tag_name: ${{ needs.gate.outputs.tag }}

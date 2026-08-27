@@ -485,6 +485,13 @@ prompts, or changes the exit code.
 remove `temperature`, `top_k` and `top_p` from the profile's `sampling-parameters` block so
 Kronk applies what the model itself recommends.
 
+Since Kronk 1.32.2 this line can fire on a profile you never wrote. That release changed Kronk's
+own shipped default for `unsloth/Qwen3.8-27B-UD-Q4_K_XL/AGENT` to pin `temperature: 0.7`,
+`top_p: 0.80` and `top_k: 20`, where it previously carried none of the three. The warning is still
+accurate — something *is* overriding the GGUF — but the something is the server's authors making a
+deliberate choice for that model, not a stale hand-edit. Read it as a fact worth knowing rather
+than a defect to repair, and leave it alone unless you have measured otherwise.
+
 Like the rest of the banner, the line is part of the interactive REPL's startup — a one-shot
 run (`kronk-cli "prompt"`) prints no banner and prints nothing here either.
 

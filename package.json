@@ -1,6 +1,6 @@
 {
   "name": "kronk-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A Claude-Code-style terminal agent for local models served by Kronk.",
   "license": "Apache-2.0",
   "type": "module",

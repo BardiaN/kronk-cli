@@ -1,10 +1,11 @@
 import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, relative, dirname, basename, isAbsolute } from 'node:path';
-import { realpathSync, mkdirSync } from 'node:fs';
+import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:path';
+import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
+import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
 
@@ -21,7 +22,130 @@ const TOOL_TIMEOUT = Number(process.env.KRONK_TOOL_TIMEOUT ?? 900) * 1000;   // 
  * re-running `pwd` and `cd` trying to work out where it is. We keep the cwd
  * here and hand it back to every subsequent call.
  */
-export const session = { root: real(process.cwd()), cwd: real(process.cwd()) };
+export const session = {
+  root: real(process.cwd()),
+  cwd: real(process.cwd()),
+  // Paths granted read-only to the sandbox for the rest of this run, and paths
+  // the user was asked about and said no to. Both are needed: without
+  // `declined`, a refusal would be re-asked on the very next command, which is
+  // how a prompt trains people to stop reading it.
+  //
+  // The seatbelt profile is rebuilt per command — `runBash` calls `sandboxArgv`
+  // every time — so adding to this set takes effect on the next command with no
+  // restart. That is what makes asking at the moment of need possible at all.
+  grants: new Set(config.sandboxReadable),
+  declined: new Set(),
+};
+
+/**
+ * Credential stores a tool needs to read, and cannot reach under the sandbox.
+ *
+ * Deliberately tiny, and grown only on measurement. Under the denied profile on
+ * macOS, `kubectl config current-context` and `aws configure list` both exit 0 —
+ * their tokens live in their own config directories, which are readable — so
+ * neither belongs here. `heroku` uses `~/.netrc` and `vault` uses
+ * `~/.vault-token`; both are SECRET_FILES rather than SECRET_DIRS, and this
+ * makes no file grantable, so neither belongs here either.
+ *
+ * A speculative entry would prompt for something that was never denied, which
+ * is worse than not prompting: it teaches the user that the question is noise.
+ */
+export const CREDENTIAL_TOOLS = {
+  gh: ['Library/Keychains'],        // verified: fails denied, succeeds granted
+  docker: ['Library/Keychains'],    // unverified; credsStore: "desktop" uses the keychain
+};
+
+/**
+ * Which known binaries a command line actually runs.
+ *
+ * Split on the separators that start a new command, then take the first token
+ * of each segment after stepping over leading `NAME=value` assignments. That is
+ * a heuristic and is meant to be: its only outputs are "ask" and "do not ask",
+ * so a miss costs one un-asked question and a false hit costs one declined
+ * prompt. It never rewrites, blocks or delays the command.
+ *
+ * `echo gh` must not match — `gh` is an argument there, not the command — and
+ * neither must `mygh`, which is why the first token is compared whole.
+ */
+export function credentialMatches(cmd, home = homedir()) {
+  const hits = new Map();
+  for (const segment of String(cmd ?? '').split(/[;&|\n]+/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+    if (!tokens[i]) continue;
+    const bin = basename(tokens[i]);
+    const paths = CREDENTIAL_TOOLS[bin];
+    if (paths && !hits.has(bin)) hits.set(bin, paths.map((rel) => join(home, rel)));
+  }
+  return [...hits].map(([bin, paths]) => ({ bin, paths }));
+}
+
+/** Just the paths, deduplicated across however many tools matched. */
+export function credentialPaths(cmd, home = homedir()) {
+  return [...new Set(credentialMatches(cmd, home).flatMap((m) => m.paths))];
+}
+
+/**
+ * The paths this command needs that are denied right now — nothing to ask about
+ * when the sandbox is off, when they are already granted, or when the path does
+ * not exist on this machine, which is what keeps Linux silent about a macOS
+ * keychain.
+ */
+export function ungranted(cmd, { home = homedir(), backend = sandbox.backend } = {}) {
+  if (backend === 'none' || backend === 'pending') return [];
+  return credentialPaths(cmd, home)
+    .filter((p) => !session.grants.has(p) && existsSync(p));
+}
+
+/**
+ * What this command would need asking about: denied, not granted, and not
+ * already refused this session. Empty means say nothing and run it.
+ *
+ * `declined` is filtered here rather than at the call site so that "ask at most
+ * once per path per session" is one rule in one place, true of a refusal
+ * exactly as it is of a grant.
+ */
+export function grantsNeeded(cmd, opts = {}) {
+  return ungranted(cmd, opts).filter((p) => !session.declined.has(p));
+}
+
+/**
+ * Record a grant, and optionally remember it past this session.
+ *
+ * Persisting is a read-modify-write of `~/.kronk-cli.json` rather than a
+ * rewrite: the file is the user's, and it holds their model, their base URL and
+ * whatever else they have set. Losing those to record a keychain path would be
+ * a bad trade for a convenience feature. A file that cannot be parsed is left
+ * alone and reported, never silently replaced.
+ *
+ * Returns the path written to, or null when nothing was persisted.
+ */
+export function rememberGrants(paths, { persist = false, home = homedir() } = {}) {
+  for (const p of paths) {
+    session.grants.add(p);
+    session.declined.delete(p);
+  }
+  if (!persist || !paths.length) return null;
+
+  const tilde = (p) => (p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
+  let current = {};
+  try { current = JSON.parse(readFileSync(config.rcPath, 'utf8')); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw new Error(`${config.rcPath} is not valid JSON — leaving it alone`, { cause: e });
+  }
+  const merged = [...new Set([
+    ...(Array.isArray(current.sandboxReadable) ? current.sandboxReadable : []),
+    ...paths.map(tilde),
+  ])];
+  writeFileSync(config.rcPath, `${JSON.stringify({ ...current, sandboxReadable: merged }, null, 2)}\n`);
+  return config.rcPath;
+}
+
+/** Remember a refusal, so the same command does not ask again this session. */
+export function declineGrants(paths) {
+  for (const p of paths) session.declined.add(p);
+}
 
 /**
  * Resolve symlinks before comparing paths.
@@ -186,6 +310,31 @@ function applyCwd(out, mark) {
   return { body, pwd: next, escaped };
 }
 
+/**
+ * One line telling the model that a sandbox denial is the likely cause, when it
+ * actually is.
+ *
+ * The gate is narrow on purpose: this fires only when the failing command named
+ * a tool in CREDENTIAL_TOOLS *and* the path it needs is still ungranted.
+ * Loosening it to "the sandbox denies something" would fire on every failing
+ * `npm test` and every failing build, because SECRET_FILES are denied
+ * unconditionally under any active backend — something is always denied. A hint
+ * that appears on every failure teaches the model to blame the sandbox for
+ * ordinary bugs, which is worse than no hint at all.
+ *
+ * KRONK_SANDBOX_ALLOW is deliberately not suggested here. It is the read-write
+ * hatch the grant prompt exists to replace.
+ */
+export function credentialHint(cmd, opts = {}) {
+  const denied = ungranted(cmd, opts);
+  if (!denied.length) return null;
+  const home = opts.home ?? homedir();
+  const tilde = (p) => (p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
+  const match = credentialMatches(cmd, home).find((m) => m.paths.some((p) => denied.includes(p)));
+  return `note: the sandbox denies reads of ${denied.map(tilde).join(', ')}, which `
+    + `${match?.bin ?? 'this command'} uses. Re-run and allow it if this failed on credentials.`;
+}
+
 /** The directory a command ran in, and a warning when that was outside the root. */
 function whereLines(pwd, escaped) {
   const ran = pwd ? `ran in: ${pwd}` : `ran in: ${session.cwd} (final directory unknown)`;
@@ -234,6 +383,7 @@ export function resolveSandbox({ platform = process.platform, env = process.env 
 
   const [bin, argv] = sandboxArgv('exit 0', {
     backend: wanted, root: session.root, home: homedir(), cwd: session.cwd, tmp: real(tmpdir()),
+    readable: [...session.grants],
   });
   const probe = spawnSync(bin, argv, { stdio: 'ignore', timeout: 10_000 });
 
@@ -273,8 +423,13 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
       return resolve(`error: refusing to run unconfined — KRONK_SANDBOX=strict and ${sandbox.reason}.`);
     }
 
+    // Read straight from module state rather than from `opts`. The profile is
+    // rebuilt here on every command, so a grant made a moment ago is in force
+    // now; threading it through the caller would add a second route for the
+    // same fact, and the two would eventually disagree.
     const [bin, argv] = sandboxArgv(script, {
       backend, root: session.root, home: homedir(), cwd: session.cwd, tmp: real(tmpdir()),
+      readable: [...session.grants],
     });
     const child = spawn(bin, argv, {
       cwd: session.cwd,
@@ -338,13 +493,19 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
         err.trim() && `stderr:\n${err.trim()}`,
       ].filter(Boolean).join('\n\n');
 
+      // Right after `error:` and `ran in:`, never appended at the end: the tool
+      // result is capped for display, and a hint below the cap is a hint the
+      // reader never sees.
+      const hint = credentialHint(cmd);
+
       if (timedOut) {
         return resolve(clip([
           `error: killed after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s).`,
           'The command may simply be slow — re-run a narrower scope, or raise KRONK_TOOL_TIMEOUT.',
           ...where,
+          hint,
           tail || '(no output before it was killed)',
-        ].join('\n')));
+        ].filter(Boolean).join('\n')));
       }
       if (code === 0) {
         const okBody = clip(body + err);
@@ -359,6 +520,7 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
           ? `error: killed by ${signal} after ${secs}s`
           : `error: exit code ${code} after ${secs}s`,
         ...where,
+        hint,
         tail || '(no output)',
         truncated ? '[earlier output dropped]' : '',
       ].filter(Boolean).join('\n')));

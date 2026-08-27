@@ -37,9 +37,13 @@ export const cacheDirs = (home) => CACHE_DIRS.map((d) => join(home, d));
  * exfiltrates whichever credential store was not on it.
  *
  * So the default is narrow and covers material that is pivot-grade and never
- * legitimately read by a build. Session tokens for CLIs you are already logged
- * in to stay readable — add them with KRONK_SANDBOX_DENY if your threat model
- * wants them gone, at the cost of those commands failing.
+ * legitimately read by a build. Session tokens that CLIs keep in their own
+ * config directories — `~/.config/gh`, `~/.aws`, `~/.kube` — stay readable. A
+ * token in the macOS keychain does not: `Library/Keychains` is on the list
+ * below, which is why `gh` reports a login failure here even though it is
+ * logged in. That is what the `readable` grant exists to lift, one path at a
+ * time and without granting writes. Add more with KRONK_SANDBOX_DENY if your
+ * threat model wants them gone, at the cost of those commands failing.
  *
  * The write confinement is the half that holds categorically. This half is
  * best-effort, and the README says so.
@@ -66,7 +70,7 @@ const sb = (p) => `"${p.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
  * dylib, locale file and device node a toolchain touches, and getting that wrong
  * fails closed in ways that look like a broken CLI rather than a blocked write.
  */
-export function seatbeltProfile({ root, home, tmp, allow = [], deny = [] }) {
+export function seatbeltProfile({ root, home, tmp, allow = [], deny = [], readable = [] }) {
   const writable = [root, '/dev', '/private/tmp', '/private/var/tmp', '/private/var/folders', '/tmp']
     .concat(tmp ? [tmp] : [])
     .concat(cacheDirs(home))
@@ -75,8 +79,14 @@ export function seatbeltProfile({ root, home, tmp, allow = [], deny = [] }) {
   // ALLOW means "this path is fully available", so it also lifts a default
   // denial. Without that there is no way to run a keychain-backed CLI like `gh`
   // short of turning the sandbox off entirely, which is a worse trade.
+  //
+  // `readable` lifts the same denial and stops there — note it is absent from
+  // `writable` above. Reading a credential store is what a logged-in CLI needs;
+  // writing to one is what an attacker needs, and handing over the second to
+  // obtain the first is the trade this parameter exists to refuse.
+  const lifted = allow.concat(readable);
   const unreadable = SECRET_DIRS.map((d) => join(home, d)).concat(deny)
-    .filter((d) => !allow.some((a) => d === a || d.startsWith(`${a}/`)));
+    .filter((d) => !lifted.some((a) => d === a || d.startsWith(`${a}/`)));
 
   return [
     '(version 1)',
@@ -99,7 +109,7 @@ export function seatbeltProfile({ root, home, tmp, allow = [], deny = [] }) {
  * shape that matches what the README promises, and it is what seatbelt does on
  * the other side.
  */
-export function bwrapArgs({ root, home, cwd, tmp, allow = [], deny = [] }) {
+export function bwrapArgs({ root, home, cwd, tmp, allow = [], deny = [], readable = [] }) {
   // /dev and /proc must be fresh mounts: a read-only bind of the host's would
   // leave a shell unable to write to its own stdout or read /proc/self.
   const args = ['--die-with-parent', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc'];
@@ -121,8 +131,14 @@ export function bwrapArgs({ root, home, cwd, tmp, allow = [], deny = [] }) {
   // A tmpfs makes a credential directory exist but be empty; /dev/null over a
   // file makes it readable and empty. Both beat a missing path, which tools
   // report as a confusing ENOENT rather than an obvious denial.
+  // A `readable` path is simply left out of this loop. It needs no bind of its
+  // own: `--ro-bind / /` above already made the whole filesystem readable, so
+  // not hiding it *is* the grant. An explicit `--ro-bind` would be redundant,
+  // and worse, would read as though write access were being withheld by that
+  // line rather than never offered — so there is none.
+  const lifted = allow.concat(readable);
   const hidden = SECRET_DIRS.map((x) => join(home, x)).concat(deny)
-    .filter((d) => !allow.some((a) => d === a || d.startsWith(`${a}/`)));
+    .filter((d) => !lifted.some((a) => d === a || d.startsWith(`${a}/`)));
   for (const d of hidden) {
     if (existsSync(d) && statSync(d).isDirectory()) args.push('--tmpfs', d);
   }
@@ -153,16 +169,19 @@ export function detectBackend({ platform = process.platform, env = process.env }
  * Build the argv that runs `script` under `backend`.
  * Returns `['bash', ['-c', script]]` shaped output for spawn().
  */
-export function sandboxArgv(script, { backend, root, home, cwd, tmp, env = process.env }) {
+export function sandboxArgv(
+  script,
+  { backend, root, home, cwd, tmp, env = process.env, readable = [] },
+) {
   const allow = extraPaths(env.KRONK_SANDBOX_ALLOW, home);
   const deny = extraPaths(env.KRONK_SANDBOX_DENY, home);
 
   if (backend === 'seatbelt') {
     return ['sandbox-exec',
-      ['-p', seatbeltProfile({ root, home, tmp, allow, deny }), 'bash', '-c', script]];
+      ['-p', seatbeltProfile({ root, home, tmp, allow, deny, readable }), 'bash', '-c', script]];
   }
   if (backend === 'bwrap') {
-    return ['bwrap', [...bwrapArgs({ root, home, cwd, tmp, allow, deny }), '-c', script]];
+    return ['bwrap', [...bwrapArgs({ root, home, cwd, tmp, allow, deny, readable }), '-c', script]];
   }
   return ['bash', ['-c', script]];
 }

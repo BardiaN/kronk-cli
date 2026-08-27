@@ -219,3 +219,74 @@ test('onPath finds a binary that exists and not one that does not', () => {
   assert.equal(onPath('sh', { env: { PATH: '/bin:/usr/bin' } }), true);
   assert.equal(onPath('definitely-not-a-real-binary', { env: { PATH: '/bin:/usr/bin' } }), false);
 });
+
+// ---------------------------------------------------------------------------
+// #21: a read-only grant channel, separate from KRONK_SANDBOX_ALLOW.
+// The whole point is the asymmetry — `allow` grants read and write, `readable`
+// grants only read — so every test here checks both halves, not just the one
+// that was asked for.
+// ---------------------------------------------------------------------------
+
+const readDenyLine = (p) => p.split('\n').find((l) => l.startsWith('(deny file-read*'));
+const writeAllowLine = (p) => p.split('\n').find((l) => l.startsWith('(allow file-write*'));
+
+test('a readable path is lifted out of the read denial', () => {
+  const p = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t', readable: ['/h/Library/Keychains'] });
+  assert.ok(!readDenyLine(p).includes('/h/Library/Keychains'), 'the denial must be lifted');
+  // Everything else on the default list stays denied — a grant is one path.
+  assert.ok(readDenyLine(p).includes('/h/.ssh'));
+  assert.ok(readDenyLine(p).includes('/h/.gnupg'));
+});
+
+test('a readable path is NOT made writable', () => {
+  const p = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t', readable: ['/h/Library/Keychains'] });
+  assert.ok(!writeAllowLine(p).includes('/h/Library/Keychains'),
+    'granting a read must never grant a write to a credential store');
+});
+
+test('allow still grants both, so the existing escape hatch is unchanged', () => {
+  const p = seatbeltProfile({ root: '/proj', home: '/h', tmp: '/t', allow: ['/h/Library/Keychains'] });
+  assert.ok(!readDenyLine(p).includes('/h/Library/Keychains'));
+  assert.ok(writeAllowLine(p).includes('/h/Library/Keychains'));
+});
+
+test('bwrap does not tmpfs a readable path, and does not bind it read-write', () => {
+  const dir = tmp();
+  const home = join(dir, 'home');
+  const granted = join(home, 'Library', 'Keychains');
+  mkdirSync(granted, { recursive: true });
+  mkdirSync(join(home, '.ssh'), { recursive: true });
+
+  const argv = bwrapArgs({ root: dir, home, cwd: dir, readable: [granted] }).join(' ');
+
+  assert.ok(!argv.includes(`--tmpfs ${granted}`), 'a granted path must not be hidden');
+  assert.ok(!argv.includes(`--bind ${granted} ${granted}`), 'and must not become writable');
+  // It needs no bind of its own: `--ro-bind / /` already covers it.
+  assert.ok(argv.includes('--ro-bind / /'));
+  // The rest of the default list is still hidden.
+  assert.ok(argv.includes(`--tmpfs ${join(home, '.ssh')}`));
+});
+
+test('a readable path that does not exist adds nothing and does not throw', () => {
+  const dir = tmp();
+  const home = join(dir, 'home');
+  mkdirSync(home, { recursive: true });
+  const missing = join(home, 'Library', 'Keychains');
+  const args = bwrapArgs({ root: dir, home, cwd: dir, readable: [missing] });
+  assert.ok(!args.includes(missing), 'nothing to hide and nothing to bind');
+});
+
+test('sandboxArgv forwards readable, and behaves as before when it is omitted', () => {
+  const env = {};
+  const [, withGrant] = sandboxArgv('true', {
+    backend: 'seatbelt', root: '/proj', home: '/h', cwd: '/proj', tmp: '/t', env,
+    readable: ['/h/Library/Keychains'],
+  });
+  assert.ok(!readDenyLine(withGrant[1]).includes('/h/Library/Keychains'));
+
+  const [, without] = sandboxArgv('true', {
+    backend: 'seatbelt', root: '/proj', home: '/h', cwd: '/proj', tmp: '/t', env,
+  });
+  assert.ok(readDenyLine(without[1]).includes('/h/Library/Keychains'),
+    'omitting readable must leave the default denial in place');
+});

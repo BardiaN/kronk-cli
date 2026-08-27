@@ -1,5 +1,8 @@
 import { streamChat } from './client.js';
-import { TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval } from './tools.js';
+import {
+  TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval,
+  grantsNeeded, rememberGrants, declineGrants, credentialMatches,
+} from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
 import { forRequest } from './reasoning.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
@@ -73,6 +76,8 @@ function endTurn(messages) {
 /**
  * Run one user turn to completion, looping while the model requests tools.
  *
+ * `grant(binary, paths)` resolves to 'yes' | 'no' | 'always'; asked before a
+ * command that needs a credential store the sandbox denies.
  * `approve(name, args)` returns a boolean; used for mutating tools. `auto` is
  * autonomous mode — the system prompt in force, not `--yes` — and decides
  * both whether a premature "done" is handed back or accepted, and (via
@@ -80,7 +85,7 @@ function endTurn(messages) {
  * replayed on the wire.
  */
 export async function runTurn({
-  messages, model, signal, approve, mcp, auto = false, maxSteps = config.maxSteps,
+  messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
 }) {
   const tools = mcp ? [...TOOLS, ...mcp.toolDefs()] : TOOLS;
   let totalUsage = null;
@@ -248,6 +253,38 @@ export async function runTurn({
           messages.push({ role: 'tool', tool_call_id: call.id,
             content: 'error: the user denied this action. Ask what to do instead.' });
           continue;
+        }
+      }
+
+      // Ask here, not in the tool layer, and not after this point.
+      //
+      // `liveLine()` below starts a 120 ms interval that rewrites the current
+      // line with `\r…\x1b[K` unconditionally, so a question printed once it is
+      // running gets overwritten between the asking and the answering. This is
+      // the last moment at which stdout belongs to us, and it is next door to
+      // the approval prompt the user already expects, which is where a second
+      // question belongs anyway.
+      if (call.name === 'bash' && grant) {
+        const needed = grantsNeeded(args.cmd);
+        if (needed.length) {
+          // Name the tool the user recognises, from the same scan that found
+          // the paths — so the question cannot name one binary while granting
+          // for another.
+          const binary = credentialMatches(args.cmd)
+            .find((m) => m.paths.some((p) => needed.includes(p)))?.bin ?? 'this command';
+          const answer = await grant(binary, needed);
+          if (answer === 'yes' || answer === 'always') {
+            try {
+              const wrote = rememberGrants(needed, { persist: answer === 'always' });
+              if (wrote) console.log(c.grey(`  remembered in ${wrote}`));
+            } catch (e) {
+              // Failing to persist must not fail the command. The grant is
+              // already in force for this session either way.
+              console.log(c.yellow(`  ${e.message}`));
+            }
+          } else {
+            declineGrants(needed);
+          }
         }
       }
 

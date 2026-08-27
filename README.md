@@ -234,11 +234,44 @@ little, since an attacker just takes whichever store was not on the list. So the
 material that is pivot-grade and never legitimately read by a build.
 
 **The one exception is the macOS keychain**, which is denied by default. `gh` stores its token
-there, so it will report `Failed to log in` under the sandbox. If you want it:
+there, so it reports `Failed to log in` under the sandbox even though you are logged in.
+
+You no longer have to know that in advance. When the agent is about to run a command that needs a
+credential store the sandbox denies, it asks first:
+
+```console
+  1 ⚙ bash: gh issue view 34
+  gh reads ~/Library/Keychains, which the sandbox denies.
+  allow read-only access for this session? [y/N/always]
+```
+
+- `y` grants it for the rest of the session. The seatbelt profile is rebuilt for every command, so
+  it takes effect on the next one — no restart.
+- `always` also writes the path to `~/.kronk-cli.json` under `sandboxReadable`, so later sessions
+  do not ask. It says which file it wrote.
+- Anything else declines, and **the command still runs**. Declining is not an error; the command
+  fails the way it would have failed anyway, and the result carries a note saying a denial is the
+  likely cause.
+
+You are asked at most once per path per session, whichever way you answered. With `--yes` or
+`--auto` there is nobody to ask, so the grant is automatic and announced on stderr — piping stdout
+still gets only the answer.
+
+The grant is **read-only**. That is the difference from the older escape hatch, which still works
+and is still the right tool if you would rather set it before you start:
 
 ```bash
 KRONK_SANDBOX_ALLOW=~/Library/Keychains kronk-cli
 ```
+
+`KRONK_SANDBOX_ALLOW` makes a path fully available — **readable *and writable***. For a credential
+store that is a poor trade: reading it is what a logged-in CLI needs, and writing to it is what an
+attacker needs. The prompt grants only the read.
+
+Be honest with yourself about what you are granting either way: it is the whole `~/Library/Keychains`
+directory, not one tool's item in it. macOS `securityd` gates individual items by per-application
+ACL independently of file reads, so a process still cannot read another application's item without
+your consent — but that is a mitigation on top, not the boundary you drew here.
 
 **Logging in from inside the agent will not work**, by design — `argocd login`, `gh auth login` and
 `kubectl config set-context` all write outside the project. Log in yourself, in your own shell,
@@ -632,6 +665,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_SANDBOX` | `auto` | `auto` confines `bash` when the OS can, `strict` refuses to run it when it cannot, `off` disables it |
 | `KRONK_SANDBOX_ALLOW` | — | Paths to make fully available inside the sandbox, comma or colon separated |
 | `KRONK_SANDBOX_DENY` | — | Extra paths to hide from `bash`, comma or colon separated |
+| `KRONK_CONFIG` | `~/.kronk-cli.json` | Path to the config file, so tests and throwaway runs stay off the real one |
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
@@ -655,9 +689,14 @@ The per-turn usage line still prints after each response; this one is the runnin
   "compactAt": 0.85,
   "noThink": true,
   "preserveThinking": true,
-  "replayReasoning": true
+  "replayReasoning": true,
+  "sandboxReadable": ["~/Library/Keychains"]
 }
 ```
+
+`sandboxReadable` is the list `always` writes at the credential prompt — paths the sandbox lifts
+its **read** denial on, and nothing more. Unlike `KRONK_SANDBOX_ALLOW` it never grants writes.
+Entries may be absolute or `~`-relative, and one that no longer exists is ignored in silence.
 
 ---
 

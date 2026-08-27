@@ -59,6 +59,6 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true      # feeds the public scorecard badge
-      - uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+      - uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v3
         with:
           sarif_file: results.sarif

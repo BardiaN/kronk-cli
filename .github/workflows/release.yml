@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       tag: ${{ steps.check.outputs.tag }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,7 +49,7 @@ jobs:
     if: needs.gate.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 24, cache: npm }
       - run: npm ci
@@ -62,7 +62,7 @@ jobs:
     permissions:
       contents: write        # create the tag this release is named for
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: tag the release commit
         env:
           TAG: ${{ needs.gate.outputs.tag }}
@@ -80,7 +80,7 @@ jobs:
       contents: read
       id-token: write        # trusted publishing
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -108,7 +108,7 @@ jobs:
     outputs:
       sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: compute tarball hash
         id: hash
         env:

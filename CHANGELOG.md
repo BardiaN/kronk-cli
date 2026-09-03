@@ -6,6 +6,18 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.3.1 — 2026-09-03
+
+### CI
+
+- move scorecard-action to 2.4.4, off the GCR image that stopped serving ([#58](https://github.com/BardiaN/kronk-cli/pull/58))
+- bump softprops/action-gh-release from 3.0.2 to 3.0.3 ([#57](https://github.com/BardiaN/kronk-cli/pull/57))
+- bump the codeql-action group with 3 updates ([#56](https://github.com/BardiaN/kronk-cli/pull/56))
+
+### Chores
+
+- **release**: 0.3.1 — action pins forward, and scorecard off a registry that went dark ([`0cf663a`](https://github.com/BardiaN/kronk-cli/commit/0cf663a178bf013773dfc56419fb16b2ca72286c))
+
 ## 0.3.0 — 2026-08-27
 
 ### Features

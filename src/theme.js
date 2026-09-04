@@ -96,20 +96,31 @@ export function parseColorFgBg(value) {
 }
 
 /**
- * The relative luminance of an OSC 11 reply, or null if this is not one.
- *
- * The reply is `ESC ] 11 ; rgb:RRRR/GGGG/BBBB` terminated by BEL or ST, and
- * the components are 1 to 4 hex digits wide depending on the terminal — xterm
- * answers in 16 bits, others in 8. Each is scaled by its own width, so a
- * short reply is not read as a near-black one.
+ * The reply to an OSC 11 query: `ESC ] 11 ; rgb:RRRR/GGGG/BBBB`, an optional
+ * alpha component, then BEL or ST. Components are 1 to 4 hex digits wide
+ * depending on the terminal — xterm answers in 16 bits, others in 8.
  */
-export function parseOsc11(reply) {
-  if (typeof reply !== 'string') return null;
-  // eslint-disable-next-line no-control-regex -- ESC is what the reply starts with
-  const m = /\x1b\]11;rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})/i.exec(reply);
+// eslint-disable-next-line no-control-regex -- ESC is what the reply starts with
+const OSC11 = /\x1b\]11;rgba?:([0-9a-f]{1,4})\/([0-9a-f]{1,4})\/([0-9a-f]{1,4})(?:\/[0-9a-f]{1,4})?(?:\x07|\x1b\\)?/i;
+
+/**
+ * The reply found in `buf`: its relative luminance, and where it sat, so the
+ * caller can hand back whatever else was in the buffer. Each component is
+ * scaled by its own width — a short reply is not a near-black one.
+ */
+function matchOsc11(buf) {
+  const m = typeof buf === 'string' ? OSC11.exec(buf) : null;
   if (!m) return null;
   const [r, g, b] = m.slice(1, 4).map((h) => parseInt(h, 16) / (16 ** h.length - 1));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return {
+    luminance: 0.2126 * r + 0.7152 * g + 0.0722 * b,
+    rest: buf.slice(0, m.index) + buf.slice(m.index + m[0].length),
+  };
+}
+
+/** The relative luminance of an OSC 11 reply, or null if this is not one. */
+export function parseOsc11(reply) {
+  return matchOsc11(reply)?.luminance ?? null;
 }
 
 /** Mid-grey is the boundary; a terminal sitting exactly on it reads as light. */
@@ -139,6 +150,11 @@ export function detectTheme(env = process.env) {
  * A terminal that does not implement OSC 11 says nothing at all, which is why
  * there is a timeout rather than a sentinel to wait for; 100 ms is far longer
  * than a local round trip and short enough to be invisible.
+ *
+ * Anything read that is not part of the reply is somebody typing ahead, and it
+ * is pushed back onto stdin before this resolves. Without that, a fast typist
+ * — or a script piping commands in — loses whatever landed in the window, and
+ * loses it silently.
  */
 export function probeBackground({ input = process.stdin, output = process.stdout, timeoutMs = 100 } = {}) {
   if (!input?.isTTY || !output?.isTTY || typeof input.setRawMode !== 'function') {
@@ -148,24 +164,25 @@ export function probeBackground({ input = process.stdin, output = process.stdout
     const wasRaw = input.isRaw;
     let buf = '';
     let settled = false;
-    const finish = (value) => {
+    const finish = (value, rest) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       input.off('data', onData);
       if (!wasRaw) input.setRawMode(false);
       input.pause();
+      if (rest) input.unshift?.(Buffer.from(rest, 'latin1'));
       resolve(value);
     };
     const onData = (chunk) => {
       buf += chunk.toString('latin1');
-      const lum = parseOsc11(buf);
-      if (lum !== null) finish(themeForLuminance(lum));
-      // Whatever this is, it is not the reply — someone is typing. Give the
-      // keystrokes back rather than eating more of them.
-      else if (buf.length > 64) finish(null);
+      const hit = matchOsc11(buf);
+      if (hit) finish(themeForLuminance(hit.luminance), hit.rest);
+      // Whatever this is, it is not the reply and no longer plausibly the
+      // start of one. Stop reading and give it back.
+      else if (buf.length > 64) finish(null, buf);
     };
-    const timer = setTimeout(() => finish(null), timeoutMs);
+    const timer = setTimeout(() => finish(null, buf), timeoutMs);
     input.setRawMode(true);
     input.resume();
     input.on('data', onData);

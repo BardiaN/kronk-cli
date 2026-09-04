@@ -12,9 +12,11 @@ function fakeTty(reply, { delay = 0 } = {}) {
   const input = new EventEmitter();
   input.isTTY = true;
   input.isRaw = false;
+  input.pushedBack = '';
   input.setRawMode = (on) => { input.isRaw = on; };
   input.resume = () => {};
   input.pause = () => {};
+  input.unshift = (chunk) => { input.pushedBack = chunk.toString('latin1') + input.pushedBack; };
   const output = {
     isTTY: true,
     written: '',
@@ -121,6 +123,21 @@ test('typing during the probe gives the keystrokes back rather than eating more'
   const { input, output } = fakeTty('x'.repeat(100));
   assert.equal(await probeBackground({ input, output, timeoutMs: 500 }), null);
   assert.equal(input.listenerCount('data'), 0);
+  assert.equal(input.pushedBack, 'x'.repeat(100));
+});
+
+test('what was typed before the reply arrived is pushed back onto stdin', async () => {
+  const { input, output } = fakeTty('/theme light\r\x1b]11;rgb:ffff/ffff/ffff\x07');
+  assert.equal(await probeBackground({ input, output, timeoutMs: 500 }), 'light');
+  assert.equal(input.pushedBack, '/theme light\r');
+});
+
+test('a terminal that never answers hands back whatever was typed instead', async () => {
+  const { input, output } = fakeTty(null);
+  const probe = probeBackground({ input, output, timeoutMs: 30 });
+  input.emit('data', Buffer.from('hello\r'));
+  assert.equal(await probe, null);
+  assert.equal(input.pushedBack, 'hello\r');
 });
 
 test('nothing is written to a stream that is not a terminal', async () => {

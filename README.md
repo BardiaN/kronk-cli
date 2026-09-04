@@ -1220,6 +1220,32 @@ Kronk holds one resident copy of the model, so two sub-agents at once queue behi
 and finish no sooner than two in sequence. Delegation here buys **context**, not wall-clock:
 give away the work that is expensive to read and cheap to conclude.
 
+### What it costs, measured
+
+The same survey of `src/` — one table row per module, its responsibility and the gotcha its own
+comments call out, plus three facts quoted with `file:line` — run twice per model on this
+machine, once with `--no-subagents` and once told to orchestrate. `main ctx peak` is the largest
+prompt the *main* conversation ever sent, which is the number the feature exists to move:
+
+| model | mode | wall | main ctx peak | tokens generated | answer |
+|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B `/AGENT` | plain | 143s | 30.8k | 5.5k | 23/23 |
+| Qwen3.6-35B-A3B `/AGENT` | orchestrated, 5 sub-agents | 352s | **12.9k** | 16.2k | 22/23 |
+| Ornith-1.5-35B `/AGENT` | plain | 154s | 34.4k | 5.8k | 23/23 |
+| Ornith-1.5-35B `/AGENT` | orchestrated, 5 sub-agents | 357s | **5.9k** | 16.5k | 23/23 |
+
+Delegation cut the main conversation's high-water mark by 58% and 83%, and cost roughly 2.4×
+the wall clock and 3× the generated tokens to do it. That is the trade in one line: **you are
+buying window, and paying for it in time and tokens.** It is worth it when the conversation has
+to keep going afterwards, and not worth it for a question you were going to ask once.
+
+The one answer that got worse is worth reading too. Qwen's orchestrated run scored 22/23 because
+the sub-agent it asked for "the constant that caps a tool result" came back with a plausible
+wrong one from a different module, and the orchestrator had no way to know: it never read the
+file. The plain run made the same mistake, spent three rounds re-reading `tools.js`, and caught
+it. **A sub-agent's report is evidence you cannot cross-examine** — ask for `file:line` and
+verbatim quotes in the prompt, and check the ones that matter.
+
 ### The two agents
 
 | Agent | Tools | For |
@@ -1254,13 +1280,20 @@ earning it.
 ### Knobs
 
 ```bash
-kronk-cli --no-subagents            # remove the task tool entirely
-KRONK_SUBAGENT_MODEL=Qwen3.6-4B kronk-cli   # grunt work on a smaller model
-KRONK_SUBAGENT_STEPS=80 kronk-cli   # a longer leash per task
+kronk-cli --no-subagents             # remove the task tool entirely
+KRONK_SUBAGENT_MODEL=<id> kronk-cli  # run the grunt work on a different model
+KRONK_SUBAGENT_STEPS=80 kronk-cli    # a longer leash per task
 ```
 
 A sub-agent gets the same startup scan of your project the main agent got, so it starts knowing
 what the repo is instead of spending its first two steps finding out.
+
+`KRONK_SUBAGENT_MODEL` needs a model that can actually drive a tool loop, and "smaller" is not
+the same thing as "cheaper" here. Measured on the survey task below with `qwen2.5-coder-1.5b`
+as the sub-agent model: every sub-agent returned prose without calling a single tool, the main
+agent noticed, read all eighteen modules itself, and finished with **47.1k** of context against
+the 30.8k it uses when you never delegate at all. A sub-agent that cannot do the work costs you
+the delegation *and* the work.
 
 > A small model will not delegate unprompted as often as a frontier one does. Asking for it
 > works — *"use a sub-agent to survey the test suite first"* — and is usually how you will

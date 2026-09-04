@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { samplingOverride } from '../src/client.js';
+import { samplingOverride, parseLimits, NO_LIMITS } from '../src/client.js';
+import { config, applyLimits, DEFAULT_MAX_TOKENS } from '../src/config.js';
 
 // Metadata as Kronk actually reports it (strings), matched against the
 // effective sampling-parameters block (numbers) for the same model.
@@ -78,4 +79,73 @@ test('an empty-string value on either side is no opinion, not zero', () => {
     null,
   );
   assert.equal(samplingOverride(AGREES, { ...EFFECTIVE_AGREES, top_k: '' }), null);
+});
+
+// ---- parseLimits: every limit comes from the named model's own profile ----
+
+/** The shape /v1/kronk/models/{id} really returns, trimmed to what we read. */
+const payload = (contextWindow, maxTokens, { native = '262144', template = 'preserve_thinking' } = {}) => ({
+  model_config: {
+    'context-window': contextWindow,
+    'sampling-parameters': { max_tokens: maxTokens, temperature: 1, top_k: 20, top_p: 0.95 },
+  },
+  metadata: { 'qwen35moe.context_length': native, 'tokenizer.chat_template': template },
+});
+
+test('the window and the output cap are read per model, not assumed', () => {
+  const big = parseLimits(payload(131072, 16384));
+  assert.equal(big.configured, 131072);
+  assert.equal(big.maxTokens, 16384, "the profile's cap, not the program's default");
+  assert.equal(big.native, 262144);
+  assert.equal(big.preserveThinking, true);
+
+  const small = parseLimits(payload(32768, 0, { native: '32768', template: 'no such kwarg' }));
+  assert.equal(small.configured, 32768);
+  assert.equal(small.preserveThinking, false);
+});
+
+test('max_tokens 0 is "no opinion", not a cap of zero', () => {
+  assert.equal(parseLimits(payload(32768, 0)).maxTokens, null);
+  assert.equal(parseLimits(payload(32768, '')).maxTokens, null);
+  assert.equal(parseLimits(payload(32768, undefined)).maxTokens, null);
+});
+
+test('a model with no profile answers unknown rather than guessing', () => {
+  assert.deepEqual(parseLimits({}), {
+    configured: null, native: null, preserveThinking: false, samplingDiff: null, maxTokens: null,
+  });
+  assert.deepEqual(parseLimits(undefined), NO_LIMITS);
+});
+
+// ---- applyLimits: the user's number wins, then the profile's, then ours ----
+
+test('the profile sets the output cap when the user has not', () => {
+  config.maxTokensExplicit = false;
+  applyLimits(parseLimits(payload(131072, 16384)));
+  assert.equal(config.maxTokens, 16384);
+  assert.equal(config.contextWindow, 131072);
+  assert.equal(config.templatePreservesThinking, true);
+});
+
+test('a cap the user typed is never overruled by a profile', () => {
+  config.maxTokensExplicit = true;
+  config.maxTokens = 2048;
+  applyLimits(parseLimits(payload(131072, 16384)));
+  assert.equal(config.maxTokens, 2048);
+  assert.equal(config.contextWindow, 131072, 'the rest still follows the model');
+});
+
+test('a profile with no cap of its own falls back to the default', () => {
+  config.maxTokensExplicit = false;
+  applyLimits(parseLimits(payload(32768, 0)));
+  assert.equal(config.maxTokens, DEFAULT_MAX_TOKENS);
+});
+
+test('switching to a model with no profile clears the previous model’s limits', () => {
+  config.maxTokensExplicit = false;
+  applyLimits(parseLimits(payload(131072, 16384)));
+  applyLimits(parseLimits({}));
+  assert.equal(config.contextWindow, null, 'a stale 131k window is worse than none');
+  assert.equal(config.templatePreservesThinking, false);
+  assert.equal(config.maxTokens, DEFAULT_MAX_TOKENS);
 });

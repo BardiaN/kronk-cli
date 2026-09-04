@@ -14,6 +14,11 @@ function fileConfig() {
 
 const file = fileConfig();
 
+/** Only ever used when neither the user nor the model's profile has a number. */
+export const DEFAULT_MAX_TOKENS = 8192;
+
+const maxTokensRaw = process.env.KRONK_MAX_TOKENS ?? file.maxTokens;
+
 /** Used when nothing is passed on the command line or in the environment. */
 export const DEFAULT_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT';
 
@@ -28,7 +33,13 @@ export const config = {
   baseUrl: process.env.KRONK_URL   ?? file.baseUrl ?? 'http://localhost:11435/v1',
   token:   process.env.KRONK_TOKEN ?? file.token   ?? 'kronk',
   model:   process.env.KRONK_MODEL ?? file.model   ?? null,   // null → DEFAULT_MODEL, then auto-pick
-  maxTokens: Number(process.env.KRONK_MAX_TOKENS ?? file.maxTokens ?? 8192),
+  maxTokens: Number(maxTokensRaw ?? DEFAULT_MAX_TOKENS),
+  // Whether the number above is the user's answer or ours. When it is ours,
+  // boot replaces it with whatever the chosen model's own /AGENT profile
+  // allows — see applyLimits. Without this flag there is no way to tell a
+  // deliberate 8192 from the default one, and the profile would silently
+  // overrule a number the user typed.
+  maxTokensExplicit: maxTokensRaw !== undefined,
   // Unlimited by default — a run stops when the model is done or you press Ctrl-C.
   // Set --steps / KRONK_MAX_STEPS to opt into a cap.
   maxSteps: Number(process.env.KRONK_MAX_STEPS ?? file.maxSteps ?? Infinity),
@@ -77,12 +88,35 @@ export const config = {
   // The startup scan of the working directory, kept so a sub-agent starts
   // knowing what the project is instead of spending its first two steps on it.
   projectPrimer: null,
-  contextWindow: null,   // filled in at boot from Kronk
+  contextWindow: null,   // filled in at boot from the chosen model's profile
   nativeContext: null,
+  // The sub-agent model's own limits, when one is configured. A sub-agent on
+  // a 32k model must not compact against the main model's 131k window.
+  subagentLimits: null,
   templatePreservesThinking: false,   // filled in at boot from the model's template
   samplingOverride: null,   // filled in at boot: params where the profile overrides the model's own
   rcPath: RC,
 };
+
+/**
+ * Point the session's limits at one model's profile.
+ *
+ * Every one of these was resolved once at boot and then treated as a property
+ * of the program rather than of the model, so `/model` could move the session
+ * to a 32k model while compaction still aimed at 131k and `preserve_thinking`
+ * was still sent to a template that does not declare it. They are properties
+ * of whichever model is selected now.
+ */
+export function applyLimits({
+  configured, native, preserveThinking, samplingDiff, maxTokens,
+} = {}) {
+  config.contextWindow = configured ?? null;
+  config.nativeContext = native ?? null;
+  config.templatePreservesThinking = Boolean(preserveThinking);
+  config.samplingOverride = samplingDiff ?? null;
+  if (!config.maxTokensExplicit) config.maxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
+  return config;
+}
 
 /**
  * Whether this request should pin the earlier think blocks: the user wants it,

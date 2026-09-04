@@ -180,11 +180,18 @@ export async function runTask(args, {
     { role: 'user', content: prompt },
   ];
 
+  // A sub-agent on another model gets that model's window and output cap, not
+  // the session's. Compacting a 32k sub-agent at 85% of the main model's 131k
+  // means never compacting it at all.
+  const own = config.subagentModel ? config.subagentLimits : null;
+
   const done = await run({
     messages,
     // A smaller model for the grunt work is the whole reason this is a knob:
     // the survey is reading and grepping, the synthesis is not.
     model: config.subagentModel ?? model,
+    window: own ? own.contextWindow : config.contextWindow,
+    maxTokens: own?.maxTokens ?? config.maxTokens,
     signal,
     approve,
     grant,

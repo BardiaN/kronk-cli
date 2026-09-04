@@ -75,10 +75,41 @@ export function samplingOverride(metadata, sampling) {
   return diffs.length ? diffs : null;
 }
 
+export const NO_LIMITS = {
+  configured: null, native: null, preserveThinking: false, samplingDiff: null, maxTokens: null,
+};
+
 /**
- * Effective context window for a model id, the model's native maximum,
- * whether its chat template understands `preserve_thinking`, and whether the
- * profile is overriding the model's own sampling values.
+ * Everything about one model that the rest of the program is allowed to
+ * assume, read out of that model's own profile — pure, so the whole surface
+ * is testable without a server.
+ *
+ * `maxTokens` is the profile's own output cap. Kronk reports 0 for a model
+ * whose profile does not set one, which is "no opinion" and not a limit of
+ * zero, so it comes back null and the caller keeps its default. Anything else
+ * is what the person who wrote the profile decided this model may generate,
+ * and it is not ours to halve.
+ */
+export function parseLimits(d) {
+  if (!d) return NO_LIMITS;
+  const sampling = d.model_config?.['sampling-parameters'];
+  const profileMax = num(sampling?.max_tokens);
+  const nativeKey = Object.keys(d.metadata ?? {}).find((k) => k.endsWith('.context_length'));
+  const template = d.metadata?.['tokenizer.chat_template'];
+  return {
+    configured: d.model_config?.['context-window'] ?? null,
+    native: nativeKey ? Number(d.metadata[nativeKey]) : null,
+    preserveThinking: typeof template === 'string' && template.includes('preserve_thinking'),
+    samplingDiff: samplingOverride(d.metadata, sampling),
+    maxTokens: profileMax && profileMax > 0 ? profileMax : null,
+  };
+}
+
+/**
+ * Effective context window for a model id, the model's native maximum, the
+ * output cap its profile sets, whether its chat template understands
+ * `preserve_thinking`, and whether the profile is overriding the model's own
+ * sampling values.
  * The id contains slashes, so it must be percent-encoded — Kronk's route takes
  * one path segment and 404s on a raw id.
  *
@@ -93,20 +124,9 @@ export function samplingOverride(metadata, sampling) {
  */
 export async function modelLimits(id) {
   try {
-    const d = await (await req(`/kronk/models/${encodeURIComponent(id)}`)).json();
-    const configured = d.model_config?.['context-window'] ?? null;
-    const nativeKey = Object.keys(d.metadata ?? {}).find((k) => k.endsWith('.context_length'));
-    const native = nativeKey ? Number(d.metadata[nativeKey]) : null;
-    const template = d.metadata?.['tokenizer.chat_template'];
-    const preserveThinking = typeof template === 'string' && template.includes('preserve_thinking');
-    const samplingDiff = samplingOverride(d.metadata, d.model_config?.['sampling-parameters']);
-    return {
-      configured, native, preserveThinking, samplingDiff,
-    };
+    return parseLimits(await (await req(`/kronk/models/${encodeURIComponent(id)}`)).json());
   } catch {
-    return {
-      configured: null, native: null, preserveThinking: false, samplingDiff: null,
-    };
+    return NO_LIMITS;
   }
 }
 

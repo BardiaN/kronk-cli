@@ -626,6 +626,25 @@ yellow past 70%, red past 90%. Toggling `/auto`, `/think` or `/steps` updates it
 
 The per-turn usage line still prints after each response; this one is the running picture.
 
+### It follows your terminal's background
+
+That grey is the one colour the whole line depends on, and the sixteen-colour palette has exactly
+one of them — bright black, which most terminals render around `#555`. On a light background it
+reads; on a dark one the status line was the hardest thing on screen to see.
+
+So the palette is chosen per background, from the 256-colour cube: a lighter grey on a dark
+terminal, a darker one on a light terminal, and every other colour shifted the same way. Which
+background you have is settled once, at startup, in this order:
+
+1. `KRONK_THEME`, or `"theme"` in `~/.kronk-cli.json` — `dark` or `light` pins it
+2. `COLORFGBG`, when the terminal exports it
+3. the terminal's own answer to an `OSC 11` background query, waited on for 100 ms
+4. failing all of that, dark — what most terminals ship as
+
+`/theme dark` or `/theme light` switches it mid-session, for when step 3 guessed wrong. `NO_COLOR`
+still turns every escape off, and a terminal that advertises no 256-colour support gets a
+sixteen-colour palette picked the same way.
+
 ---
 
 ## REPL commands
@@ -643,6 +662,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `/agents` | the sub-agents `task` can delegate to, and what each may touch |
 | `/mcp` | list attached MCP servers and their tools |
 | `/context` | how much of the context window is used |
+| `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
 | `/compact` | replace the conversation with a summary of itself |
 | `/clear` | reset the conversation, keep the model |
 | `/exit`, `/quit` | quit |
@@ -676,7 +696,9 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
+| `KRONK_THEME` | `auto` | `dark` or `light` pins the palette; `auto` reads the terminal's background |
 | `NO_COLOR` | — | Any value disables colour |
+| `FORCE_COLOR` | — | `0` disables colour; any other value keeps it on through a pipe |
 
 ### Config file
 
@@ -690,6 +712,7 @@ The per-turn usage line still prints after each response; this one is the runnin
   "maxTokens": 16384,
   "maxSteps": 200,
   "showThinking": false,
+  "theme": "auto",
   "autoCompact": true,
   "compactAt": 0.85,
   "noThink": true,
@@ -1390,6 +1413,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/distill.js` | summarizing large tool output in a throwaway context |
 | `src/config.js` | precedence of flags, env, config file |
 | `src/ui.js` | colour, spinner, usage formatting |
+| `src/theme.js` | which palette to print in, and how the background is worked out |
 
 ---
 

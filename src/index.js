@@ -8,6 +8,7 @@ import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from 
 import { pickDefault, ensureLoaded } from './boot.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
+import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
 import { compact, report } from './compact.js';
@@ -68,6 +69,8 @@ if (args.help) {
     KRONK_PRESERVE_THINKING
                         false to stop pinning earlier think blocks in the
                         prompt (smaller prompts, cache lost on every turn)
+    KRONK_THEME         dark or light to pin the palette; default auto, which
+                        asks the terminal for its background colour
     KRONK_WARM          false to skip the boot-time model preload
     KRONK_AUTO_COMPACT  false to disable automatic compaction
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
@@ -289,6 +292,7 @@ const HELP = `
   ${c.bold('/agents')}          sub-agents you can delegate to with the task tool
   ${c.bold('/mcp')}             list attached MCP servers and their tools
   ${c.bold('/context')}         how much of the context window is used
+  ${c.bold('/theme [d|l]')}     dark or light palette, for when the terminal guessed wrong
   ${c.bold('/compact')}         replace the conversation with a summary of itself
   ${c.bold('/clear')}           reset the conversation
   ${c.bold('/exit')}            quit
@@ -425,6 +429,10 @@ async function main() {
     return;
   }
 
+  // Before readline takes stdin, because settling the palette may mean asking
+  // the terminal for its background colour and reading the reply in raw mode.
+  await resolveTheme({ prefer: config.theme, input: stdin, output: stdout });
+
   const rl = readline.createInterface({ input: stdin, output: stdout, historySize: 500 });
   await boot();
   const { content, ctx } = await systemMessage(AUTO);
@@ -559,6 +567,16 @@ async function main() {
       }
       console.log(c.grey(`  model: ${config.subagentModel ?? config.model} · `
         + `cap ${config.subagentSteps} steps per task\n`));
+      continue;
+    }
+    if (input === '/theme' || input.startsWith('/theme ')) {
+      // Everything prints through src/ui.js, which reads the palette per call,
+      // so the next line drawn is already in the new one — nothing to redraw.
+      const want = input.slice(6).trim().toLowerCase();
+      const name = { d: 'dark', dark: 'dark', l: 'light', light: 'light' }[want];
+      if (want && !name) { console.log(c.yellow('  /theme dark | /theme light')); continue; }
+      if (name) useTheme({ name });
+      console.log(c.grey(`  ${theme()} palette`));
       continue;
     }
     if (input === '/models') { await showModels(); continue; }

@@ -6,6 +6,13 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.4.1 — 2026-09-04
+
+### Fixes
+
+- **ui**: hand back what was typed while the background query was in flight ([`9e7b758`](https://github.com/BardiaN/kronk-cli/commit/9e7b75816b7b03f8c29f139a6e1af180cecc7f21))
+- **ui**: pick the palette from the terminal's background, not from bright black ([`0a23134`](https://github.com/BardiaN/kronk-cli/commit/0a23134e7da77f9d2b91e4aa1bc010ab3cfda9e7))
+
 ## 0.4.0 — 2026-09-04
 
 ### Features

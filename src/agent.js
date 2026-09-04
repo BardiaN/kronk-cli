@@ -11,6 +11,7 @@ import { maybeDistill } from './distill.js';
 import {
   carryChecklist, clearPlan, openItems, outstandingLines, planLines, pushNudge,
 } from './plan.js';
+import { runTask, taskTools, TASK_TOOL } from './subagent.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
 
@@ -50,11 +51,11 @@ const thought = (reasoning) => (reasoning ? { reasoning_content: reasoning } : {
  * view as the wire request that just overflowed — see `compact` in
  * src/compact.js.
  */
-async function compactInto(messages, model, signal, auto) {
+async function compactInto(messages, model, signal, auto, out = console.log) {
   const res = await compact(messages, { model, signal, auto });
-  if (res.failed || res.skipped) { console.log(report(res)); return false; }
+  if (res.failed || res.skipped) { out(report(res)); return false; }
   messages.splice(0, messages.length, ...res.messages);
-  console.log(report(res));
+  out(report(res));
   return true;
 }
 
@@ -68,8 +69,8 @@ const MAX_NUDGES = 2;
  * message — the reply, or the step-cap note — so a nudge is never left sitting
  * directly before the next typed prompt.
  */
-function endTurn(messages) {
-  outstandingLines().forEach((l) => console.log(l));
+function endTurn(messages, { out = console.log, plan = true } = {}) {
+  if (plan) outstandingLines().forEach((l) => out(l));
   return messages;
 }
 
@@ -86,8 +87,11 @@ function endTurn(messages) {
  */
 export async function runTurn({
   messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
+  tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
 }) {
-  const tools = mcp ? [...TOOLS, ...mcp.toolDefs()] : TOOLS;
+  // `taskTools` is empty below the top level, which is the whole recursion
+  // guard: a sub-agent is never handed the tool that spawns one.
+  const tools = [...toolset, ...taskTools(depth), ...(mcp ? mcp.toolDefs() : [])];
   let totalUsage = null;
   let step = 0;
   let compacted = false;
@@ -97,17 +101,22 @@ export async function runTurn({
   // a checklist the previous turn left in the transcript is history, it is
   // already in the prompt prefix, and rewriting history is what evicts the
   // prompt cache — see `carryChecklist`.
-  clearPlan();
+  if (usePlan) clearPlan();
 
   for (;;) {
     step += 1;
     if (Number.isFinite(maxSteps) && step > maxSteps) {
-      console.log(c.yellow(`  ⛔ step cap reached (${maxSteps}). Stopping.`));
-      console.log(c.grey('     raise it with --steps N, or /steps N in the REPL'));
-      messages.push({ role: 'assistant', content: '(stopped: step cap reached)' });
-      return endTurn(messages);
+      out(c.yellow(`  ⛔ step cap reached (${maxSteps}). Stopping.`));
+      out(c.grey(depth
+        ? '     raise it with KRONK_SUBAGENT_STEPS'
+        : '     raise it with --steps N, or /steps N in the REPL'));
+      messages.push({ role: 'assistant',
+        content: depth
+          ? `(stopped: the sub-agent reached its step cap of ${maxSteps} before finishing)`
+          : '(stopped: step cap reached)' });
+      return endTurn(messages, { out, plan: usePlan });
     }
-    let sp = spinner('thinking');
+    let sp = spinner(depth ? 'sub-agent' : 'thinking');
     let text = '';
     let reasoning = '';
     let calls = [];
@@ -132,7 +141,9 @@ export async function runTurn({
           // Accumulated before the display check: whether the user watches the
           // model think has nothing to do with whether the model gets it back.
           reasoning += ev.value;
-          if (!config.showThinking) continue;
+          // A sub-agent's reasoning is not the answer, and a second stream
+          // interleaved with the caller's is unreadable. See runTask.
+          if (!stream || !config.showThinking) continue;
           if (sp) { sp.stop(); sp = null; }
           if (!inReasoning) { process.stdout.write(c.grey('\n  ┄ thinking ┄\n  ')); inReasoning = true; }
           process.stdout.write(c.grey(ev.value.replace(/\n/g, '\n  ')));
@@ -140,9 +151,10 @@ export async function runTurn({
         }
 
         else if (ev.type === 'text') {
+          text += ev.value;
+          if (!stream) continue;
           if (sp) { sp.stop(); sp = null; }
           if (inReasoning) { process.stdout.write(c.grey('\n  ┄─────────┄\n\n')); inReasoning = false; }
-          text += ev.value;
           process.stdout.write(ev.value);
           wroteAnything = true;
         }
@@ -159,13 +171,13 @@ export async function runTurn({
       if (sp) { sp.stop(); sp = null; }
       if (isOverflow(e) && !compacted) {
         compacted = true;
-        console.log(c.yellow('\n  context full — compacting and retrying'));
+        out(c.yellow('\n  context full — compacting and retrying'));
         // The plan itself is module state, so compaction cannot reach it. The
         // snapshot it just summarised away is not put back: there is no tool
         // result left to carry one, and inserting a message here would be the
         // rewrite `carryChecklist` exists to avoid. The next round's tool
         // results carry the plan again.
-        if (await compactInto(messages, model, signal, auto)) {
+        if (await compactInto(messages, model, signal, auto, out)) {
           step -= 1;
           continue;
         }
@@ -178,15 +190,19 @@ export async function runTurn({
     if (inReasoning) process.stdout.write(c.grey('\n  ┄─────────┄\n'));
     if (wroteAnything) process.stdout.write('\n');
     if (totalUsage) {
-      console.log(fmtUsage(totalUsage, config.contextWindow));
-      config.lastUsed = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
+      out(fmtUsage(totalUsage, config.contextWindow));
+      // The status line reports the conversation the user is typing into. A
+      // sub-agent's window is its own and is thrown away with it.
+      if (!depth) {
+        config.lastUsed = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
+      }
     }
 
     if (config.autoCompact && config.contextWindow && totalUsage) {
       const used = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
       if (used / config.contextWindow >= config.compactAt) {
-        console.log(c.yellow(`  context ${Math.round((used / config.contextWindow) * 100)}% full — compacting`));
-        if (!await compactInto(messages, model, signal, auto)) config.autoCompact = false;
+        out(c.yellow(`  context ${Math.round((used / config.contextWindow) * 100)}% full — compacting`));
+        if (!await compactInto(messages, model, signal, auto, out)) config.autoCompact = false;
       }
     }
 
@@ -195,7 +211,7 @@ export async function runTurn({
       if (!text.trim()) {
         // Reasoning models sometimes spend the whole budget thinking and emit no
         // answer. Say so rather than returning silence.
-        console.log(c.yellow('  (model produced no answer — raise KRONK_MAX_TOKENS or /thinking off)'));
+        out(c.yellow('  (model produced no answer — raise KRONK_MAX_TOKENS or /thinking off)'));
         messages.push({ role: 'assistant', content: '(no answer produced)', ...thought(reasoning) });
       } else {
         messages.push({ role: 'assistant', content: text, ...thought(reasoning) });
@@ -205,13 +221,13 @@ export async function runTurn({
       // keep going — but only when nobody is watching, and only twice: past
       // that the model is not going to finish, and looping is worse than
       // reporting what is left.
-      if (auto && openItems().length && nudges < MAX_NUDGES) {
+      if (usePlan && auto && openItems().length && nudges < MAX_NUDGES) {
         nudges += 1;
         pushNudge(messages);
-        console.log(c.yellow(`  ⚠ ${openItems().length} checklist items still open — continuing`));
+        out(c.yellow(`  ⚠ ${openItems().length} checklist items still open — continuing`));
         continue;
       }
-      return endTurn(messages);
+      return endTurn(messages, { out, plan: usePlan });
     }
 
     messages.push({
@@ -239,17 +255,21 @@ export async function runTurn({
 
       const at = Number.isFinite(maxSteps) ? `${step}/${maxSteps}` : `${step}`;
       const isMcp = Boolean(mcp?.has(call.name));
+      // The same list the model was offered, not just the name it used: with
+      // delegation off, or below the top level, a `task` call is a call to a
+      // tool that does not exist and falls through to runTool saying so.
+      const isTask = !isMcp && call.name === 'task' && tools.includes(TASK_TOOL);
       const label = isMcp
         ? `${c.magenta('⚙')} ${call.name} ${c.grey(JSON.stringify(args).slice(0, 120))}`
         : `${c.blue(`⚙ ${describe(call.name, args)}`)}`;
-      console.log(`${c.grey(`  ${at}`)} ${label}`);
+      out(`${c.grey(`  ${at}`)} ${label}`);
 
       if (isMcp ? mcpNeedsApproval(call.name) : NEEDS_APPROVAL.has(call.name)) {
         const body = preview(call.name, args);
-        if (body) console.log(body.split('\n').map((l) => `    ${l}`).join('\n'));
+        if (body) out(body.split('\n').map((l) => `    ${l}`).join('\n'));
         const ok = await approve(call.name, args);
         if (!ok) {
-          console.log(c.red('  ✗ denied'));
+          out(c.red('  ✗ denied'));
           messages.push({ role: 'tool', tool_call_id: call.id,
             content: 'error: the user denied this action. Ask what to do instead.' });
           continue;
@@ -276,11 +296,11 @@ export async function runTurn({
           if (answer === 'yes' || answer === 'always') {
             try {
               const wrote = rememberGrants(needed, { persist: answer === 'always' });
-              if (wrote) console.log(c.grey(`  remembered in ${wrote}`));
+              if (wrote) out(c.grey(`  remembered in ${wrote}`));
             } catch (e) {
               // Failing to persist must not fail the command. The grant is
               // already in force for this session either way.
-              console.log(c.yellow(`  ${e.message}`));
+              out(c.yellow(`  ${e.message}`));
             }
           } else {
             declineGrants(needed);
@@ -288,35 +308,51 @@ export async function runTurn({
         }
       }
 
-      const live = liveLine();
       let result;
-      try {
-        result = isMcp
-          ? await mcp.call(call.name, args)
-          : await runTool(call.name, args, {
-              onProgress: (info) => live.update({ ...info, window: config.contextWindow }),
-            });
-      } finally {
-        live.done();
+      if (isTask) {
+        // No `liveLine` around this one. It rewrites the current line every
+        // 120 ms, which would erase the sub-agent's own output as fast as it
+        // is printed.
+        try {
+          result = await runTask(args, { run: runTurn, model, signal, approve, grant, out });
+        } catch (e) {
+          // Errors are data here exactly as they are in `runTool`: a
+          // sub-agent that died does not take the turn that delegated to it
+          // down with it.
+          result = `error: the sub-agent failed — ${e.message}`;
+        }
+      } else {
+        const live = liveLine();
+        try {
+          result = isMcp
+            ? await mcp.call(call.name, args)
+            : await runTool(call.name, args, {
+                onProgress: (info) => live.update({ ...info, window: config.contextWindow }),
+              });
+        } finally {
+          live.done();
+        }
       }
 
       // set_plan hands back a rendering of what the harness just stored; paying a
       // second model call to paraphrase our own text would be pure waste.
-      if (call.name !== 'set_plan') {
+      // A sub-agent's report is already the distillation of everything it
+      // read; paying a second model call to summarise a summary is waste.
+      if (call.name !== 'set_plan' && !isTask) {
         result = await maybeDistill(result, {
-          model, signal, command: args.cmd ?? describe(call.name, args),
+          model, signal, out, command: args.cmd ?? describe(call.name, args),
         });
       }
       const failed = result.startsWith('error:');
-      if (failed) toolResultLines(result).forEach((l) => console.log(l));
-      else if (call.name === 'set_plan') planLines().forEach((l) => console.log(l));
-      else console.log(c.grey(`  ✓ ${result.split('\n').length} lines`));
+      if (failed) toolResultLines(result).forEach((l) => out(l));
+      else if (call.name === 'set_plan') planLines().forEach((l) => out(l));
+      else out(c.grey(`  ✓ ${result.split('\n').length} lines`));
       messages.push({ role: 'tool', tool_call_id: call.id, content: result });
     }
 
     // On the last tool result rather than in a message of its own, so the
     // round only ever adds to the prompt. Nothing already sent is touched.
-    carryChecklist(messages);
+    if (usePlan) carryChecklist(messages);
     // loop: the model now sees the tool output
   }
 }

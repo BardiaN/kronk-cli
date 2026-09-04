@@ -3,7 +3,7 @@ import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { config, DEFAULT_MODEL, warnIfInsecure } from './config.js';
+import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
 import { pickDefault, ensureLoaded } from './boot.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
@@ -61,7 +61,8 @@ if (args.help) {
     KRONK_TOKEN         any non-empty value when Kronk runs open
     KRONK_MODEL         overrides the default model
     KRONK_MODEL_CONFIG  path to Kronk's model_config.yaml, used by setup
-    KRONK_MAX_TOKENS    output cap per response (default 8192)
+    KRONK_MAX_TOKENS    output cap per response; overrides the cap the
+                        chosen model's own profile sets (8192 if it sets none)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
     KRONK_NO_THINK      set to 1 to disable reasoning
     KRONK_PRESERVE_THINKING
@@ -154,14 +155,31 @@ async function boot() {
 
   if (config.warm) await ensureLoaded(ids);
 
-  const {
-    configured, native, preserveThinking, samplingDiff,
-  } = await modelLimits(config.model);
-  config.contextWindow = configured;
-  config.nativeContext = native;
-  config.templatePreservesThinking = preserveThinking;
-  config.samplingOverride = samplingDiff;
+  // After `ensureLoaded`, which may have fallen back to a different model
+  // than the one asked for. Reading the profile before that point would
+  // describe a model this session is not using.
+  applyLimits(await modelLimits(config.model));
+
+  // The sub-agent model's profile is its own. Resolved once here rather than
+  // on the first delegation, where the wait would land mid-task.
+  config.subagentLimits = config.subagentModel
+    ? await modelLimits(config.subagentModel)
+    : null;
   return ids;
+}
+
+/**
+ * Move the session onto another model, limits and all.
+ *
+ * `/model` used to assign `config.model` and stop there, so a switch to a 32k
+ * model kept compacting against the previous model's 131k window and kept
+ * sending `preserve_thinking` to a template that never declared it. Every
+ * limit is a property of the selected model, so every limit is re-read here.
+ */
+async function switchModel(id) {
+  config.model = id;
+  applyLimits(await modelLimits(id));
+  return id;
 }
 
 const gb = (n) => `${(n / 1e9).toFixed(1)} GB`;
@@ -581,8 +599,11 @@ async function main() {
                ?? subs.find((m) => m.endsWith('/AGENT'))
                ?? subs[0];
       if (!hit) { console.log(c.red(`  no model matching "${want}"`)); continue; }
-      config.model = hit;
+      await switchModel(hit);
       console.log(c.green(`  switched to ${hit}`));
+      console.log(c.grey(`  window ${config.contextWindow?.toLocaleString() ?? 'unknown'}`
+        + ` · output cap ${config.maxTokens.toLocaleString()}`
+        + `${config.maxTokensExplicit ? ' (yours)' : ' (from its profile)'}`));
       continue;
     }
     if (input.startsWith('/file ')) {

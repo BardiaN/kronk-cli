@@ -51,8 +51,8 @@ const thought = (reasoning) => (reasoning ? { reasoning_content: reasoning } : {
  * view as the wire request that just overflowed — see `compact` in
  * src/compact.js.
  */
-async function compactInto(messages, model, signal, auto, out = console.log) {
-  const res = await compact(messages, { model, signal, auto });
+async function compactInto(messages, { out = console.log, ...opts }) {
+  const res = await compact(messages, opts);
   if (res.failed || res.skipped) { out(report(res)); return false; }
   messages.splice(0, messages.length, ...res.messages);
   out(report(res));
@@ -88,6 +88,9 @@ function endTurn(messages, { out = console.log, plan = true } = {}) {
 export async function runTurn({
   messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
   tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
+  // The window and the output cap belong to `model`, not to the session: a
+  // sub-agent may be running on a different model with a different profile.
+  window = config.contextWindow, maxTokens = config.maxTokens,
 }) {
   // `taskTools` is empty below the top level, which is the whole recursion
   // guard: a sub-agent is never handed the tool that spawns one.
@@ -131,7 +134,7 @@ export async function runTurn({
         messages: forRequest(messages, auto),
         tools,
         signal,
-        maxTokens: config.maxTokens,
+        maxTokens,
         noThink: config.noThink,
         // Re-read every step: this has to hold for the tool-loop follow-ups too,
         // and `/think` can flip the answer between one turn and the next.
@@ -177,7 +180,7 @@ export async function runTurn({
         // result left to carry one, and inserting a message here would be the
         // rewrite `carryChecklist` exists to avoid. The next round's tool
         // results carry the plan again.
-        if (await compactInto(messages, model, signal, auto, out)) {
+        if (await compactInto(messages, { model, signal, auto, out, window, maxTokens })) {
           step -= 1;
           continue;
         }
@@ -190,7 +193,7 @@ export async function runTurn({
     if (inReasoning) process.stdout.write(c.grey('\n  ┄─────────┄\n'));
     if (wroteAnything) process.stdout.write('\n');
     if (totalUsage) {
-      out(fmtUsage(totalUsage, config.contextWindow));
+      out(fmtUsage(totalUsage, window));
       // The status line reports the conversation the user is typing into. A
       // sub-agent's window is its own and is thrown away with it.
       if (!depth) {
@@ -198,11 +201,13 @@ export async function runTurn({
       }
     }
 
-    if (config.autoCompact && config.contextWindow && totalUsage) {
+    if (config.autoCompact && window && totalUsage) {
       const used = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
-      if (used / config.contextWindow >= config.compactAt) {
-        out(c.yellow(`  context ${Math.round((used / config.contextWindow) * 100)}% full — compacting`));
-        if (!await compactInto(messages, model, signal, auto, out)) config.autoCompact = false;
+      if (used / window >= config.compactAt) {
+        out(c.yellow(`  context ${Math.round((used / window) * 100)}% full — compacting`));
+        if (!await compactInto(messages, { model, signal, auto, out, window, maxTokens })) {
+          config.autoCompact = false;
+        }
       }
     }
 
@@ -327,7 +332,7 @@ export async function runTurn({
           result = isMcp
             ? await mcp.call(call.name, args)
             : await runTool(call.name, args, {
-                onProgress: (info) => live.update({ ...info, window: config.contextWindow }),
+                onProgress: (info) => live.update({ ...info, window }),
               });
         } finally {
           live.done();

@@ -634,7 +634,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 |---|---|
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
-| `/model <id>` | switch model — substring match, `/AGENT` preferred |
+| `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
 | `/file <path>` | add a file to the conversation as context |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
@@ -657,7 +657,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_TOKEN` | `kronk` | Any non-empty value while Kronk runs open; a real JWT when protected |
 | `KRONK_MODEL` | `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT` | Model id |
 | `KRONK_MODEL_CONFIG` | `~/.kronk/models/model_config.yaml` | Kronk's per-model config, the file `kronk-cli setup` writes |
-| `KRONK_MAX_TOKENS` | `8192` | Output cap per response |
+| `KRONK_MAX_TOKENS` | the model's profile | Output cap per response. Unset, the selected model's own `max_tokens` decides — `8192` only when its profile sets none |
 | `KRONK_MAX_STEPS` | unlimited | Cap on tool calls per task |
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
@@ -857,6 +857,13 @@ not read `reasoning_content` either and would discard the blocks.
 
 Kronk reports the **effective** window for whichever model id you selected — that comes from
 `context-window` in `model_config.yaml`, so a `/AGENT` profile and its base model can differ.
+
+Every limit is read from the selected model's profile, and re-read when the selection changes:
+the window, the output cap (`sampling-parameters.max_tokens`), whether the chat template
+understands `preserve_thinking`, and the model's native maximum. `/model` mid-session moves all
+of them, and a sub-agent running on `KRONK_SUBAGENT_MODEL` compacts against *its* window rather
+than the main model's. The one number that is not taken from the profile is a `KRONK_MAX_TOKENS`
+you set yourself — yours always wins.
 
 Three places surface it:
 

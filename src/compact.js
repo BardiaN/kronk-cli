@@ -73,16 +73,19 @@ function transcript(messages) {
  * reasoning-replay view of the current task as the wire request that
  * triggered it, not a second, independently-computed answer.
  */
-export async function compact(messages, { model, signal, auto = false } = {}) {
+export async function compact(messages, {
+  model, signal, auto = false, window = config.contextWindow, maxTokens = config.maxTokens,
+} = {}) {
   const system = messages[0];
   const raw = transcript(forRequest(messages, auto));
   if (!raw.trim()) return { messages, before: 0, after: 0 };
 
   const before = await tokenize(model, [system.content, raw].join('\n'));
 
-  // Leave room for the instruction and the summary itself.
-  const window = config.contextWindow ?? 32768;
-  const { text: body, elided } = fit(raw, Math.floor(window * 0.6));
+  // Leave room for the instruction and the summary itself. The window belongs
+  // to the model this compaction runs on, which is not always the one the
+  // session started with — see applyLimits in src/config.js.
+  const { text: body, elided } = fit(raw, Math.floor((window ?? 32768) * 0.6));
   if (elided) console.log(c.grey(`  transcript too large for one pass — elided ${elided.toLocaleString()} chars from the middle`));
 
   let summary = '';
@@ -92,7 +95,7 @@ export async function compact(messages, { model, signal, auto = false } = {}) {
       { role: 'user', content: `${body}\n\n---\n\n${PROMPT}` },
     ],
     signal,
-    maxTokens: Math.min(4096, config.maxTokens),
+    maxTokens: Math.min(4096, maxTokens),
     noThink: true,
   })) {
     if (ev.type === 'text') summary += ev.value;

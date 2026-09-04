@@ -143,3 +143,21 @@ test('the report is printed, bounded, and handed back whole', async () => {
   assert.ok(lines.length < 40, 'the screen does not');
   assert.ok(lines.some((l) => l.includes('more lines')), 'and says how many it hid');
 });
+
+test('a sub-agent on another model gets that model’s window, not the session’s', async () => {
+  const { run, calls } = stubRun();
+  config.contextWindow = 131072;
+  config.maxTokens = 16384;
+  config.subagentModel = 'small-model';
+  config.subagentLimits = { configured: 32768, contextWindow: 32768, maxTokens: 4096 };
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
+  assert.equal(calls[0].window, 32768, 'compacting a 32k sub-agent at 85% of 131k never fires');
+  assert.equal(calls[0].maxTokens, 4096);
+
+  // No sub-agent model: it is the session's model, so the session's limits.
+  config.subagentModel = null;
+  config.subagentLimits = null;
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
+  assert.equal(calls[1].window, 131072);
+  assert.equal(calls[1].maxTokens, 16384);
+});

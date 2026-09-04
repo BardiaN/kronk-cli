@@ -6,6 +6,16 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.4.0 — 2026-09-04
+
+### Features
+
+- delegate a task to a sub-agent that runs in its own context ([#61](https://github.com/BardiaN/kronk-cli/pull/61))
+
+### Fixes
+
+- take every model limit from the selected model, not from boot ([#62](https://github.com/BardiaN/kronk-cli/pull/62))
+
 ## 0.3.1 — 2026-09-03
 
 ### CI

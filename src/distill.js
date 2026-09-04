@@ -103,10 +103,13 @@ export function shouldDistill(result) {
 
 export async function maybeDistill(result, opts) {
   if (!shouldDistill(result)) return result;
+  // `out` so a sub-agent's distillation prints inside its own indented block
+  // rather than at the caller's margin. See runTask in src/subagent.js.
+  const out = opts.out ?? console.log;
   const before = await tokenize(opts.model, result);
   const digest = await distill(result, opts);
   if (!digest || digest.length >= result.length) return result;
   const after = await tokenize(opts.model, digest);
-  console.log(c.grey(`    distilled ${before.toLocaleString()} → ${after.toLocaleString()} tokens (separate context)`));
+  out(c.grey(`    distilled ${before.toLocaleString()} → ${after.toLocaleString()} tokens (separate context)`));
   return digest;
 }

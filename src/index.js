@@ -14,6 +14,7 @@ import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
+import { AGENTS } from './subagent.js';
 import { runSetup } from './setup.js';
 
 // ---- argv -------------------------------------------------------------
@@ -50,6 +51,7 @@ if (args.help) {
     -a, --auto          autonomous: approve tools automatically, finish the task
     -y, --yes           approve tools automatically (no autonomous prompt)
         --no-think      disable the model's reasoning pass (faster)
+        --no-subagents  remove the task tool; no delegation
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
         --              end option parsing; everything after is the prompt
@@ -68,6 +70,11 @@ if (args.help) {
     KRONK_WARM          false to skip the boot-time model preload
     KRONK_AUTO_COMPACT  false to disable automatic compaction
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
+    KRONK_SUBAGENTS     false to remove the task tool
+    KRONK_SUBAGENT_MODEL
+                        model sub-agents run on (default: the main model)
+    KRONK_SUBAGENT_STEPS
+                        tool-call cap for one delegated task (default 40)
 
   Config file: ~/.kronk-cli.json
 `);
@@ -88,6 +95,7 @@ const MCP_ON = args.mcp;
 const MCP_WANTED = args.mcpNames;
 
 if (args.noThink) config.noThink = true;
+if (args.noSubagents) config.subagents = false;
 if (args.noCompact) config.autoCompact = false;
 if (args.noWarm) config.warm = false;
 if (args.model) config.model = args.model;
@@ -127,6 +135,22 @@ async function boot() {
     }
   }
   if (!config.model) config.model = pickDefault(ids);
+
+  // Resolved against what Kronk is actually serving, exactly like the main
+  // model: a substring in the config file that matches nothing would otherwise
+  // only surface as a 404 in the middle of somebody's first delegated task.
+  if (config.subagentModel) {
+    const subs = ids.filter((id) => id.includes(config.subagentModel));
+    const hit = ids.find((id) => id === config.subagentModel)
+             ?? subs.find((id) => id.endsWith('/AGENT'))
+             ?? subs[0];
+    if (hit) config.subagentModel = hit;
+    else {
+      console.error(c.yellow(`  no model matching "${config.subagentModel}" for sub-agents`
+        + ' — they will use the main model'));
+      config.subagentModel = null;
+    }
+  }
 
   if (config.warm) await ensureLoaded(ids);
 
@@ -244,6 +268,7 @@ const HELP = `
   ${c.bold('/think')}           turn reasoning off entirely (much faster)
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
   ${c.bold('/steps [n|off]')}   cap tool calls per task (default: unlimited)
+  ${c.bold('/agents')}          sub-agents you can delegate to with the task tool
   ${c.bold('/mcp')}             list attached MCP servers and their tools
   ${c.bold('/context')}         how much of the context window is used
   ${c.bold('/compact')}         replace the conversation with a summary of itself
@@ -260,6 +285,9 @@ async function systemMessage(auto) {
   const base = auto ? SYSTEM_AUTO : SYSTEM;
   if (NO_CONTEXT) return { content: base, ctx: null };
   const ctx = await projectContext(process.cwd());
+  // Kept for the sub-agents, which get the same primer without paying for the
+  // scan again — see systemFor in src/subagent.js.
+  config.projectPrimer = ctx.text;
   const budget = config.contextWindow
     ? `\n\nYour context window is ${config.contextWindow.toLocaleString()} tokens, shared by `
       + `everything in this conversation: these instructions, file contents you read, command `
@@ -498,6 +526,21 @@ async function main() {
     if (input === '/thinking') {
       config.showThinking = !config.showThinking;
       console.log(c.grey(`  thinking display ${config.showThinking ? 'on' : 'off'}`));
+      continue;
+    }
+    if (input === '/agents') {
+      if (!config.subagents) {
+        console.log(c.grey('  delegation is off — drop --no-subagents / KRONK_SUBAGENTS=false'));
+        continue;
+      }
+      console.log(c.grey('\n  the model delegates with the task tool — one task, its own context,'));
+      console.log(c.grey('  and only its report comes back. You still approve its writes and commands.'));
+      for (const [name, a] of Object.entries(AGENTS)) {
+        console.log(`  ${c.green('●')} ${c.bold(name)} ${c.grey(`· ${a.tools.join(', ')}`)}`);
+        console.log(c.grey(`      for ${a.use}`));
+      }
+      console.log(c.grey(`  model: ${config.subagentModel ?? config.model} · `
+        + `cap ${config.subagentSteps} steps per task\n`));
       continue;
     }
     if (input === '/models') { await showModels(); continue; }

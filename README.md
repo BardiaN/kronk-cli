@@ -595,6 +595,7 @@ same way this run did.
 | `-a`, `--auto` | off | Autonomous: auto-approve tools **and** run until the task is done. Implies `--yes` |
 | `-y`, `--yes` | off | Auto-approve `write_file` and `bash` without the autonomous prompt |
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
+| `--no-subagents` | off | Remove the `task` tool, so the model cannot delegate — see [Sub-agents](#sub-agents) |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
 | `-h`, `--help` | — | Print all options and exit |
 | `--` | — | End option parsing; everything after it is prompt text, dashes and all |
@@ -639,6 +640,7 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |
 | `/think` | turn reasoning off entirely — much faster |
+| `/agents` | the sub-agents `task` can delegate to, and what each may touch |
 | `/mcp` | list attached MCP servers and their tools |
 | `/context` | how much of the context window is used |
 | `/compact` | replace the conversation with a summary of itself |
@@ -668,6 +670,9 @@ The per-turn usage line still prints after each response; this one is the runnin
 | `KRONK_CONFIG` | `~/.kronk-cli.json` | Path to the config file, so tests and throwaway runs stay off the real one |
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
+| `KRONK_SUBAGENTS` | `true` | `false` removes the `task` tool |
+| `KRONK_SUBAGENT_MODEL` | the main model | Model sub-agents run on — substring match, same as `KRONK_MODEL` |
+| `KRONK_SUBAGENT_STEPS` | `40` | Tool-call cap for one delegated task |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
@@ -690,6 +695,8 @@ The per-turn usage line still prints after each response; this one is the runnin
   "noThink": true,
   "preserveThinking": true,
   "replayReasoning": true,
+  "subagentModel": "Qwen3.6-4B",
+  "subagentSteps": 40,
   "sandboxReadable": ["~/Library/Keychains"]
 }
 ```
@@ -962,9 +969,14 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `write_file` | ✋ | Create or overwrite; shows a diff preview first |
 | `bash` | ✋ | Run a command; shows it first |
 | `set_plan` | — | Record the task checklist; replaces the stored one |
+| `task` | — | Delegate one job to a [sub-agent](#sub-agents) with its own context |
 
 `set_plan` writes nothing and runs nothing — it hands the harness a list, which is why it is
 never gated. See [Autonomous mode](#autonomous-mode) for what the harness then does with it.
+
+`task` is not gated either, because it cannot do anything by itself: every write and every
+command a sub-agent asks for comes back to the same prompt you would have seen had the main
+agent asked for it.
 
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
 escape the launch root — including through a symlink. `bash` additionally runs under an OS
@@ -1166,6 +1178,127 @@ same way.
 
 ---
 
+## Sub-agents
+
+The model can hand one job to a **sub-agent**: a fresh agent with its own context window, its
+own tool loop, and no memory of your conversation. It runs the task, and the only thing that
+ever comes back is its report.
+
+```console
+› which tools in this repo need approval, and where is that decided?
+
+  1 ⚙ task explore: list every tool definition in src/, say which are gated and where
+   │   1/40 ⚙ search /def\(/ in src
+   │   ✓ 9 lines
+   │   2/40 ⚙ read src/tools.js
+   │   ✓ 587 lines
+   │   3/40 ⚙ read src/subagent.js
+   │   ✓ 211 lines
+   │   2104→380 tok · 58.1 tok/s · 1980 cached
+   Six built-in tools. write_file and bash are gated, by NEEDS_APPROVAL at
+   src/tools.js:261. MCP tools are gated by name, mcpNeedsApproval at :270.
+   read_file, list_dir, search, set_plan and task are not gated.
+  ✓ 3 lines
+
+  `write_file` and `bash`, from the `NEEDS_APPROVAL` set in src/tools.js:246…
+```
+
+`│` marks the sub-agent's own loop; the unprefixed lines are its report, which is what the main
+agent receives as the tool result.
+
+Three files were read. None of them is in your conversation: the 800-odd lines they cost were
+spent in a context that no longer exists, and all that is left in your window is the four-line
+answer. That is the whole point, and it is the trade [distillation](#distillation) makes for
+command output, one level up.
+
+Both agents run against the same Kronk server, so nothing leaves the machine that was not
+already leaving it.
+
+### It is not parallelism
+
+Kronk holds one resident copy of the model, so two sub-agents at once queue behind each other
+and finish no sooner than two in sequence. Delegation here buys **context**, not wall-clock:
+give away the work that is expensive to read and cheap to conclude.
+
+### What it costs, measured
+
+The same survey of `src/` — one table row per module, its responsibility and the gotcha its own
+comments call out, plus three facts quoted with `file:line` — run twice per model on this
+machine, once with `--no-subagents` and once told to orchestrate. `main ctx peak` is the largest
+prompt the *main* conversation ever sent, which is the number the feature exists to move:
+
+| model | mode | wall | main ctx peak | tokens generated | answer |
+|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B `/AGENT` | plain | 143s | 30.8k | 5.5k | 23/23 |
+| Qwen3.6-35B-A3B `/AGENT` | orchestrated, 5 sub-agents | 352s | **12.9k** | 16.2k | 22/23 |
+| Ornith-1.5-35B `/AGENT` | plain | 154s | 34.4k | 5.8k | 23/23 |
+| Ornith-1.5-35B `/AGENT` | orchestrated, 5 sub-agents | 357s | **5.9k** | 16.5k | 23/23 |
+
+Delegation cut the main conversation's high-water mark by 58% and 83%, and cost roughly 2.4×
+the wall clock and 3× the generated tokens to do it. That is the trade in one line: **you are
+buying window, and paying for it in time and tokens.** It is worth it when the conversation has
+to keep going afterwards, and not worth it for a question you were going to ask once.
+
+The one answer that got worse is worth reading too. Qwen's orchestrated run scored 22/23 because
+the sub-agent it asked for "the constant that caps a tool result" came back with a plausible
+wrong one from a different module, and the orchestrator had no way to know: it never read the
+file. The plain run made the same mistake, spent three rounds re-reading `tools.js`, and caught
+it. **A sub-agent's report is evidence you cannot cross-examine** — ask for `file:line` and
+verbatim quotes in the prompt, and check the ones that matter.
+
+### The two agents
+
+| Agent | Tools | For |
+|---|---|---|
+| `explore` | `read_file`, `list_dir`, `search` | Reading, searching, tracing how something works |
+| `code` | those plus `write_file`, `bash` | Making a change, running a build, reproducing a failure |
+
+`/agents` prints this in the REPL, with the model and step cap in force.
+
+Two roles rather than a directory of them, because every extra one is a line the model has to
+read and choose between on each call, and a local model asked to pick between eight
+near-synonyms picks badly. The split that changes what can actually happen is whether it may
+touch anything, so that is the split.
+
+### What it cannot do
+
+- **Ask you anything.** There is nobody in its loop. It is told to take the most reasonable
+  reading of the task, act, and say what it assumed.
+- **Delegate further.** The `task` tool is only ever offered at the top level, which is the
+  entire recursion guard.
+- **Get a command past you.** Its `write_file` and `bash` calls arrive at the same prompt the
+  main agent's do, nested under the call that started them. `--yes` and `--auto` skip them
+  exactly as they always did.
+- **Touch the checklist.** `set_plan` belongs to the task you asked for; a sub-agent has no
+  access to it.
+- **Reach MCP servers.** Its tool list is deliberately the short one.
+
+It also runs under a step cap — 40 by default, where the main agent's is unlimited — because
+nobody is watching it, and a report is worth less than the window a runaway loop would spend
+earning it.
+
+### Knobs
+
+```bash
+kronk-cli --no-subagents             # remove the task tool entirely
+KRONK_SUBAGENT_MODEL=<id> kronk-cli  # run the grunt work on a different model
+KRONK_SUBAGENT_STEPS=80 kronk-cli    # a longer leash per task
+```
+
+A sub-agent gets the same startup scan of your project the main agent got, so it starts knowing
+what the repo is instead of spending its first two steps finding out.
+
+`KRONK_SUBAGENT_MODEL` needs a model that can actually drive a tool loop, and "smaller" is not
+the same thing as "cheaper" here. Measured on the survey task below with `qwen2.5-coder-1.5b`
+as the sub-agent model: every sub-agent returned prose without calling a single tool, the main
+agent noticed, read all eighteen modules itself, and finished with **47.1k** of context against
+the 30.8k it uses when you never delegate at all. A sub-agent that cannot do the work costs you
+the delegation *and* the work.
+
+> A small model will not delegate unprompted as often as a frontier one does. Asking for it
+> works — *"use a sub-agent to survey the test suite first"* — and is usually how you will
+> drive this.
+
 ## Autonomous mode
 
 `--auto`, or `/auto` in the REPL, swaps in a system prompt that tells the model to finish the
@@ -1245,6 +1378,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/context.js` | startup scan: git, layout, `AGENTS.md` |
 | `src/compact.js` | summarizing the conversation when the window fills |
 | `src/plan.js` | the task checklist and the snapshot the model sees |
+| `src/subagent.js` | delegation: agent roles, their tools, the report that comes back |
 | `src/mcp.js` | MCP client: stdio + HTTP transports, tool routing |
 | `src/distill.js` | summarizing large tool output in a throwaway context |
 | `src/config.js` | precedence of flags, env, config file |

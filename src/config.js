@@ -56,6 +56,14 @@ export const config = {
   // never enters the conversation. Set KRONK_DISTILL=false to keep it whole.
   distill: (process.env.KRONK_DISTILL ?? String(file.distill ?? 'true')) !== 'false',
   distillAt: Number(process.env.KRONK_DISTILL_AT ?? file.distillAt ?? 8000),
+  // Delegation. A sub-agent runs one task in a context of its own and hands
+  // back only its report, so what it read never enters this conversation —
+  // src/subagent.js has the argument. The step cap is finite where the main
+  // one is not: nobody is watching a sub-agent, and its report is worth less
+  // than the window it would spend earning it.
+  subagents: (process.env.KRONK_SUBAGENTS ?? String(file.subagents ?? 'true')) !== 'false',
+  subagentModel: process.env.KRONK_SUBAGENT_MODEL ?? file.subagentModel ?? null,
+  subagentSteps: Number(process.env.KRONK_SUBAGENT_STEPS ?? file.subagentSteps ?? 40),
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,
@@ -66,6 +74,9 @@ export const config = {
     .filter((p) => typeof p === 'string' && p.trim())
     .map((p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)),
   lastUsed: 0,
+  // The startup scan of the working directory, kept so a sub-agent starts
+  // knowing what the project is instead of spending its first two steps on it.
+  projectPrimer: null,
   contextWindow: null,   // filled in at boot from Kronk
   nativeContext: null,
   templatePreservesThinking: false,   // filled in at boot from the model's template

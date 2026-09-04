@@ -206,7 +206,13 @@ export function safe(p) {
   return abs;
 }
 
-const def = (name, description, properties, required) => ({
+/**
+ * A tool definition in the shape the OpenAI-compatible API wants.
+ *
+ * Exported because src/subagent.js defines a tool too — one that is only
+ * offered at the top level, so it cannot live in TOOLS below.
+ */
+export const def = (name, description, properties, required) => ({
   type: 'function',
   function: { name, description, parameters: { type: 'object', properties, required } },
 });
@@ -284,6 +290,7 @@ export function describe(name, args) {
     case 'search':     return `search /${args.pattern}/ in ${args.path ?? '.'}`;
     case 'bash':       return `bash: ${args.cmd}`;
     case 'set_plan':   return `plan: ${args.items?.length ?? 0} items`;
+    case 'task':       return `task ${args.agent ?? 'explore'}: ${String(args.prompt ?? '').split('\n')[0]}`;
     default:           return `${name}(${JSON.stringify(args)})`;
   }
 }

@@ -6,6 +6,22 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.5.0 — 2026-09-05
+
+### Features
+
+- **ui**: render the model's markdown for the terminal as it streams ([`354acd2`](https://github.com/BardiaN/kronk-cli/commit/354acd2135f857f202ff5738bd9fe62e7602c51c))
+
+### Fixes
+
+- **repl**: keep the lines typed before the first prompt ([`faa5490`](https://github.com/BardiaN/kronk-cli/commit/faa5490049387122a6dd44d4ed5ed3218152cf76))
+- **ui**: hand back what was typed while the background query was in flight ([`9e7b758`](https://github.com/BardiaN/kronk-cli/commit/9e7b75816b7b03f8c29f139a6e1af180cecc7f21))
+- **ui**: pick the palette from the terminal's background, not from bright black ([`0a23134`](https://github.com/BardiaN/kronk-cli/commit/0a23134e7da77f9d2b91e4aa1bc010ab3cfda9e7))
+
+### Chores
+
+- **release**: 0.5.0 — a readable status line, rendered answers, and typing that survives startup ([`d2b042c`](https://github.com/BardiaN/kronk-cli/commit/d2b042cb7509e02d2da47cfcc01d7e9df5e64939))
+
 ## 0.4.0 — 2026-09-04
 
 ### Features

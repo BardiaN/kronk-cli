@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
@@ -15,6 +14,7 @@ import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
+import { deferredPrompt } from './prompt.js';
 import { AGENTS } from './subagent.js';
 import { runSetup } from './setup.js';
 
@@ -433,7 +433,22 @@ async function main() {
   // the terminal for its background colour and reading the reply in raw mode.
   await resolveTheme({ prefer: config.theme, input: stdin, output: stdout });
 
-  const rl = readline.createInterface({ input: stdin, output: stdout, historySize: 500 });
+  // Not created yet: the interface is opened by the first question, below.
+  // Everything between here and there — the model load, the project scan, the
+  // MCP connections — is time somebody may spend typing, and readline emits
+  // lines whether or not anything is listening. See src/prompt.js.
+  let ac = null;
+  const rl = deferredPrompt({
+    input: stdin,
+    output: stdout,
+    historySize: 500,
+    // Ctrl-C aborts the in-flight request instead of killing the process.
+    onSigint: () => {
+      if (ac) { ac.abort(); ac = null; console.log(c.yellow('\n  interrupted')); }
+      else { console.log(); rl.close(); }
+    },
+  });
+
   await boot();
   const { content, ctx } = await systemMessage(AUTO);
   console.log(banner(config.model, config.baseUrl));
@@ -470,13 +485,6 @@ async function main() {
   // The system prompt is the one record of which mode we are in — /auto rewrites
   // it — so both the status line and the turn read the answer from there.
   const isAuto = () => messages[0].content.startsWith(SYSTEM_AUTO);
-
-  // Ctrl-C aborts the in-flight request instead of killing the process.
-  let ac = null;
-  rl.on('SIGINT', () => {
-    if (ac) { ac.abort(); ac = null; console.log(c.yellow('\n  interrupted')); }
-    else { console.log(); rl.close(); }
-  });
 
   let autoApprove = AUTO_YES;
   const approve = async (name) => {

@@ -29,12 +29,12 @@
 export const PALETTES = {
   256: {
     dark: {
-      dim: '38;5;244', bold: '1',
+      dim: '38;5;244', bold: '1', italic: '3', strike: '9',
       red: '38;5;203', green: '38;5;114', yellow: '38;5;221', blue: '38;5;111',
       magenta: '38;5;176', cyan: '38;5;116', grey: '38;5;245',
     },
     light: {
-      dim: '38;5;244', bold: '1',
+      dim: '38;5;244', bold: '1', italic: '3', strike: '9',
       red: '38;5;160', green: '38;5;28', yellow: '38;5;136', blue: '38;5;26',
       magenta: '38;5;90', cyan: '38;5;30', grey: '38;5;242',
     },
@@ -44,12 +44,12 @@ export const PALETTES = {
   // program printed before the palettes existed.
   16: {
     dark: {
-      dim: '37', bold: '1',
+      dim: '37', bold: '1', italic: '3', strike: '9',
       red: '91', green: '92', yellow: '93', blue: '94',
       magenta: '95', cyan: '96', grey: '37',
     },
     light: {
-      dim: '90', bold: '1',
+      dim: '90', bold: '1', italic: '3', strike: '9',
       red: '31', green: '32', yellow: '33', blue: '34',
       magenta: '35', cyan: '36', grey: '90',
     },

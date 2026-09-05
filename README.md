@@ -647,6 +647,27 @@ sixteen-colour palette picked the same way.
 
 ---
 
+## Markdown in answers
+
+The models write markdown whether or not anything renders it, so an answer used to arrive with the
+punctuation still in your way — `### The letter is a notification`, `**binding**`, backticks around
+every identifier. Those constructs are rendered into the attributes the terminal already has:
+headings lose their hashes and gain bold, emphasis becomes bold or italic, code spans and fenced
+blocks get their own colour and a gutter, lists get a `•`, quotes a `│`, and `---` a rule.
+
+It is a line renderer, not a markdown parser — one bit of state, whether a fenced block is open —
+and anything it does not recognise is left exactly as written. Prose that only looks like markup
+survives: `snake_case`, `3 * 4`, a lone asterisk, `**kwargs` inside backticks.
+
+Two consequences worth knowing:
+
+- **Output appears a line at a time**, not a token at a time, because `**` is bold or two
+  asterisks depending on what follows it. At local speeds that is still a line every half second.
+- **With colour off the bytes are the model's own.** Piped, redirected, or `NO_COLOR` — nothing is
+  rewritten, so anything parsing kronk-cli's output sees exactly what it saw before.
+
+---
+
 ## REPL commands
 
 | Command | |
@@ -1414,6 +1435,8 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/config.js` | precedence of flags, env, config file |
 | `src/ui.js` | colour, spinner, usage formatting |
 | `src/theme.js` | which palette to print in, and how the background is worked out |
+| `src/markdown.js` | rendering the model's markdown for the terminal, as it streams |
+| `src/prompt.js` | the line reader: opened on the first question, keeping what was typed before it |
 
 ---
 

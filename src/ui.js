@@ -13,6 +13,8 @@ const wrap = (name) => (s) => {
 export const c = {
   dim: wrap('dim'),
   bold: wrap('bold'),
+  italic: wrap('italic'),
+  strike: wrap('strike'),
   red: wrap('red'),
   green: wrap('green'),
   yellow: wrap('yellow'),

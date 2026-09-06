@@ -1,16 +1,27 @@
-const on = process.stdout.isTTY && !process.env.NO_COLOR;
-const wrap = (code) => (s) => (on ? `\x1b[${code}m${s}\x1b[0m` : s);
+import { ansi } from './theme.js';
+
+/**
+ * Each colour resolves its escape when it is called, not when this module is
+ * loaded: the background is only known after the terminal has been asked, and
+ * that answer arrives after the first import. See src/theme.js.
+ */
+const wrap = (name) => (s) => {
+  const code = ansi(name);
+  return code ? `\x1b[${code}m${s}\x1b[0m` : s;
+};
 
 export const c = {
-  dim: wrap('2'),
-  bold: wrap('1'),
-  red: wrap('31'),
-  green: wrap('32'),
-  yellow: wrap('33'),
-  blue: wrap('34'),
-  magenta: wrap('35'),
-  cyan: wrap('36'),
-  grey: wrap('90'),
+  dim: wrap('dim'),
+  bold: wrap('bold'),
+  italic: wrap('italic'),
+  strike: wrap('strike'),
+  red: wrap('red'),
+  green: wrap('green'),
+  yellow: wrap('yellow'),
+  blue: wrap('blue'),
+  magenta: wrap('magenta'),
+  cyan: wrap('cyan'),
+  grey: wrap('grey'),
 };
 
 export const banner = (model, url) => `

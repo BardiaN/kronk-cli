@@ -6,6 +6,7 @@ import {
 import { config, shouldPreserveThinking } from './config.js';
 import { forRequest } from './reasoning.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
+import { markdownStream } from './markdown.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
 import {
@@ -125,6 +126,9 @@ export async function runTurn({
     let calls = [];
     let wroteAnything = false;
     let inReasoning = false;
+    // One renderer per step: a fence left open by one answer must not colour
+    // the next one as code.
+    const md = markdownStream();
 
     try {
       for await (const ev of streamChat({
@@ -158,7 +162,10 @@ export async function runTurn({
           if (!stream) continue;
           if (sp) { sp.stop(); sp = null; }
           if (inReasoning) { process.stdout.write(c.grey('\n  ┄─────────┄\n\n')); inReasoning = false; }
-          process.stdout.write(ev.value);
+          // Rendered a line at a time — see src/markdown.js. `text` keeps the
+          // model's own copy: what goes back in the conversation is never the
+          // screen's version of it.
+          process.stdout.write(md.write(ev.value));
           wroteAnything = true;
         }
 
@@ -191,6 +198,9 @@ export async function runTurn({
     }
 
     if (inReasoning) process.stdout.write(c.grey('\n  ┄─────────┄\n'));
+    // The last line has no newline to trigger it: an answer that ends mid-line
+    // would otherwise be held in the renderer and never printed.
+    if (stream) process.stdout.write(md.flush());
     if (wroteAnything) process.stdout.write('\n');
     if (totalUsage) {
       out(fmtUsage(totalUsage, window));

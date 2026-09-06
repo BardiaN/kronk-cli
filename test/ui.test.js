@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fmtContext, fmtUsage, statusLine, toolResultLines } from '../src/ui.js';
+import { PALETTES, useTheme } from '../src/theme.js';
 
 // eslint-disable-next-line no-control-regex -- stripping ANSI is the point
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -124,4 +125,48 @@ test('maxLines and maxWidth are honoured when passed explicitly', () => {
   assert.equal(lines.length, 4);
   assert.equal(lines[1], '    lin…');
   assert.equal(lines[3], '    …2 more lines (the model received all of it)');
+});
+
+// ---- the palette the line is actually painted in ------------------------
+
+const STATUS = {
+  model: 'unsloth/Model-Q4/AGENT', auto: false, yes: false, noThink: false,
+  mcp: null, steps: Infinity, used: 22000, window: 131072,
+};
+
+test('the status line is painted in the palette for the background', () => {
+  useTheme({ name: 'dark', colors: 256 });
+  const dark = statusLine(STATUS);
+  useTheme({ name: 'light' });
+  const light = statusLine(STATUS);
+  useTheme({ colors: 0 });
+
+  assert.ok(dark.includes(`\x1b[${PALETTES[256].dark.grey}m`));
+  assert.ok(light.includes(`\x1b[${PALETTES[256].light.grey}m`));
+  assert.notEqual(dark, light);
+  // Same line either way — only the escapes moved.
+  assert.equal(strip(dark), strip(light));
+});
+
+test('the dark palette does not print the bright black that started this', () => {
+  useTheme({ name: 'dark', colors: 256 });
+  const line = statusLine(STATUS);
+  useTheme({ colors: 0 });
+  assert.ok(!line.includes('\x1b[90m'), 'SGR 90 is unreadable on a dark background');
+});
+
+test('a sixteen-colour terminal still gets a background-appropriate grey', () => {
+  useTheme({ name: 'dark', colors: 16 });
+  const dark = statusLine(STATUS);
+  useTheme({ name: 'light' });
+  const light = statusLine(STATUS);
+  useTheme({ colors: 0 });
+  assert.ok(dark.includes(`\x1b[${PALETTES[16].dark.grey}m`));
+  assert.ok(light.includes(`\x1b[${PALETTES[16].light.grey}m`));
+});
+
+test('with colour off the line carries no escapes at all', () => {
+  useTheme({ name: 'dark', colors: 0 });
+  const line = statusLine(STATUS);
+  assert.equal(line, strip(line));
 });

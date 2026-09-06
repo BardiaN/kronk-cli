@@ -61,6 +61,10 @@ export const config = {
   // Kronk admits a model on its first inference request, not at server start.
   // Pay that cold load at boot rather than on the first typed prompt.
   warm: (process.env.KRONK_WARM ?? String(file.warm ?? 'true')) !== 'false',
+  // 'auto' asks the terminal what colour its background is; 'dark' or 'light'
+  // pins the palette when it answers wrong or cannot answer at all. See
+  // src/theme.js — the value is only ever read there.
+  theme: process.env.KRONK_THEME ?? file.theme ?? 'auto',
   autoCompact: (process.env.KRONK_AUTO_COMPACT ?? String(file.autoCompact ?? 'true')) !== 'false',
   compactAt: Number(process.env.KRONK_COMPACT_AT ?? file.compactAt ?? 0.85),
   // Large tool output is summarized in a throwaway context so the raw text

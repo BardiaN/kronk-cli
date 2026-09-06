@@ -6,6 +6,12 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.5.0 — 2026-09-06
+
+### Fixes
+
+- **ui**: pick the palette from the terminal's background, and render what the model writes ([#65](https://github.com/BardiaN/kronk-cli/pull/65))
+
 ## 0.4.0 — 2026-09-04
 
 ### Features

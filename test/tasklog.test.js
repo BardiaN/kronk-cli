@@ -75,7 +75,11 @@ test('past the cap the oldest go, not the newest', () => {
 });
 
 test('a half-written file is skipped, not a crash', () => {
-  writeFileSync(join(sessionDir(), 'task-999.json'), '{"n": 999, "agent": "expl');
+  // 0600 like the real thing writes: a predictable name under the temp dir with
+  // default permissions is the pattern CodeQL's js/insecure-temporary-file is
+  // about, and a fixture that stands in for a transcript should hold the same
+  // line the module it stands in for does.
+  writeFileSync(join(sessionDir(), 'task-999.json'), '{"n": 999, "agent": "expl', { mode: 0o600 });
   const runs = listRuns();
   assert.ok(Array.isArray(runs));
   assert.ok(runs.every((r) => r.n !== 999));

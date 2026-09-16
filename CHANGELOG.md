@@ -6,6 +6,12 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.6.1 — 2026-09-16
+
+### Fixes
+
+- a search that matches nothing is an answer, not a failed command ([#77](https://github.com/BardiaN/kronk-cli/pull/77))
+
 ## 0.6.0 — 2026-09-16
 
 ### Features

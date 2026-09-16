@@ -6,6 +6,17 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.6.0 — 2026-09-16
+
+### Features
+
+- keep a transcript of every sub-agent run, and a /tasks to read it ([#74](https://github.com/BardiaN/kronk-cli/pull/74))
+
+### CI
+
+- bump the codeql-action group with 3 updates ([#73](https://github.com/BardiaN/kronk-cli/pull/73))
+- give dependabot's npm bumps a conventional type the changelog knows ([#72](https://github.com/BardiaN/kronk-cli/pull/72))
+
 ## 0.5.1 — 2026-09-16
 
 ### Other changes

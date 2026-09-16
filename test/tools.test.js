@@ -179,13 +179,14 @@ test('a search that matches nothing is an answer, not a failed command', async (
   } finally { restore(); }
 });
 
-test('the grep fallback still finds what is there', async () => {
+test('the grep fallback keeps the file:line prefix the description promises', async () => {
   writeFileSync(join(root, 'haystack.txt'), 'alpha\nbravo\n');
   const restore = shadowRg(2);
   try {
     const out = await runTool('search', { pattern: 'bravo', path: 'haystack.txt' }, {});
-    assert.match(out, /bravo/);
-    assert.match(out, /haystack\.txt/, 'with the file:line prefix the description promises');
+    // GNU grep drops the filename when given exactly one file and BSD grep does
+    // not, so without -H this passes on macOS and fails on Linux.
+    assert.match(out, /haystack\.txt:2:bravo/);
   } finally { restore(); }
 });
 

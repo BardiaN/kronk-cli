@@ -576,8 +576,11 @@ export async function runTool(name, args, opts = {}) {
           // this is the branch CI never reaches, because its images ship rg.
           try {
             // -E because this tool advertises ripgrep-style patterns, and basic
-            // grep reads `a|b` as the three literal characters.
-            const { stdout } = await exec('grep', ['-rn', '-E', '-m', '200', args.pattern, where]);
+            // grep reads `a|b` as the three literal characters. -H because GNU
+            // grep drops the filename when it is given exactly one file, and
+            // this tool promises `file:line` prefixes — BSD grep prints them
+            // either way, which is why a macOS-only check would not see it.
+            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', args.pattern, where]);
             return clip(stdout) || NOTHING;
           } catch (err) {
             if (err.code === 1) return NOTHING;

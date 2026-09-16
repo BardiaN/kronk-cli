@@ -5,7 +5,12 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     labels: [dependencies]
-    commit-message: { prefix: "deps" }
+    # `build`, not `deps`: scripts/changelog.mjs groups on the Conventional
+    # Commits types and files anything else under "Other changes", which is
+    # where 0.5.1's only entry landed. `build` is the convention's own type for
+    # a change to external dependencies, and the github-actions ecosystem below
+    # already parses because `ci` happens to be one too.
+    commit-message: { prefix: "build" }
 
   # Actions are supply chain too: a compromised action sees the release secrets.
   - package-ecosystem: github-actions

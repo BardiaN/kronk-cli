@@ -16,6 +16,7 @@ import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
 import { deferredPrompt } from './prompt.js';
 import { AGENTS } from './subagent.js';
+import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
 import { runSetup } from './setup.js';
 
 // ---- argv -------------------------------------------------------------
@@ -290,6 +291,7 @@ const HELP = `
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
   ${c.bold('/steps [n|off]')}   cap tool calls per task (default: unlimited)
   ${c.bold('/agents')}          sub-agents you can delegate to with the task tool
+  ${c.bold('/tasks [n]')}       sub-agent runs this session; with n, one in full
   ${c.bold('/mcp')}             list attached MCP servers and their tools
   ${c.bold('/context')}         how much of the context window is used
   ${c.bold('/theme [d|l]')}     dark or light palette, for when the terminal guessed wrong
@@ -391,6 +393,11 @@ async function oneShot(prompt) {
 async function main() {
   // Before anything reaches the network, on every path through the program.
   warnIfInsecure();
+
+  // At startup, not only at exit: the transcripts worth sweeping are the ones
+  // a crash left behind, and the exit path that would have removed them is the
+  // path that did not run.
+  sweep();
 
   // Subcommands are dispatched before the one-shot path below, so `setup` is
   // never mistaken for a one-word prompt and sent to the model.
@@ -588,6 +595,14 @@ async function main() {
       continue;
     }
     if (input === '/models') { await showModels(); continue; }
+    if (input === '/tasks' || input.startsWith('/tasks ')) {
+      const raw = input.split(/\s+/)[1];
+      // Printed, never pushed into `messages`. Reading what a sub-agent did
+      // must not cost the window the delegation just saved.
+      const lines = raw === undefined ? runLines() : transcriptLines(Number(raw));
+      lines.forEach((l) => console.log(l));
+      continue;
+    }
     if (input === '/mcp') {
       if (!mcp || !mcp.routes.size) { console.log(c.grey('  no MCP servers attached — start with --mcp')); continue; }
       for (const [name, server] of mcp.servers) {
@@ -659,6 +674,10 @@ async function main() {
 
   rl.close();
   mcp?.close();
+  // Transcripts are disposable by construction; a session that ends tidily
+  // takes its own with it. `sweep` at startup is what catches the ones a crash
+  // left behind, because this line is exactly what a crash skips.
+  cleanup();
   console.log(c.grey('  bye'));
 }
 

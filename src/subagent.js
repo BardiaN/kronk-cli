@@ -1,6 +1,7 @@
 import { def, TOOLS } from './tools.js';
 import { config } from './config.js';
-import { c } from './ui.js';
+import { c, elapsed } from './ui.js';
+import { startRun } from './tasklog.js';
 
 /**
  * Sub-agents: one delegated task, one throwaway context.
@@ -129,6 +130,39 @@ export function systemFor(agent) {
 const nest = (line) => String(line).split('\n')
   .map((l) => `${c.grey('   │')} ${l}`).join('\n');
 
+/** How much of the prompt fits on the opening line. */
+const GIST = 60;
+
+/**
+ * The line that says a run has started.
+ *
+ * Without it a delegated run is an unlabelled block of nested tool calls, and
+ * two of them in a row are indistinguishable in scrollback. The gist is the
+ * prompt's first line, cut: enough to recognise which task this was, never
+ * enough to be worth reading instead of the report.
+ */
+export function openLine(agent, prompt) {
+  const first = String(prompt).split('\n')[0].trim();
+  const gist = first.length > GIST ? `${first.slice(0, GIST - 1)}…` : first;
+  return `${c.grey('   ┌')} ${c.bold(agent)} ${c.grey(`· ${gist}`)}`;
+}
+
+/**
+ * The line that closes one, and the only place the transcript is advertised.
+ *
+ * This is what makes `reportLines`' "…N more lines" actionable: the report on
+ * screen is bounded, and now there is somewhere to go for the rest of it and
+ * for everything the sub-agent read on the way.
+ */
+export function closeLine({ ms, steps, path, ok }) {
+  // A run that threw or was interrupted is the one worth reading, so the line
+  // that points at its transcript must not read like a clean finish.
+  const bits = [`${steps} step${steps === 1 ? '' : 's'}`, elapsed(ms), ...(ok ? [] : ['stopped'])];
+  if (path) bits.push(path);
+  const line = `   └ ${bits.join(' · ')}`;
+  return ok ? c.grey(line) : c.yellow(line);
+}
+
 const MAX_REPORT_LINES = 14;
 
 /** The report on screen, dimmed and bounded — the caller received all of it. */
@@ -185,34 +219,54 @@ export async function runTask(args, {
   // means never compacting it at all.
   const own = config.subagentModel ? config.subagentLimits : null;
 
-  const done = await run({
-    messages,
-    // A smaller model for the grunt work is the whole reason this is a knob:
-    // the survey is reading and grepping, the synthesis is not.
-    model: config.subagentModel ?? model,
-    window: own ? own.contextWindow : config.contextWindow,
-    maxTokens: own?.maxTokens ?? config.maxTokens,
-    signal,
-    approve,
-    grant,
-    // No MCP: a local model already struggles past ~25 tools, and the
-    // sub-agent's list is meant to be the short one.
-    mcp: null,
-    tools: subagentTools(agent),
-    // The checklist is module state belonging to the task the user asked for.
-    // A sub-agent that called set_plan would clear it out from under the agent
-    // that delegated to it.
-    plan: false,
-    // Its reasoning and prose are not printed: they are not the answer, and a
-    // second stream interleaved with the caller's is unreadable. Tool calls
-    // still show, indented, so the run is not a black box.
-    stream: false,
-    out: (line) => out(nest(line)),
-    maxSteps,
-    depth: 1,
-  });
+  // Recorded from here, not from the first step: a run that dies in its first
+  // model call still leaves a file saying which task was asked for.
+  const log = startRun({ agent, prompt, model: config.subagentModel ?? model });
+  const started = Date.now();
+  out(openLine(agent, prompt));
 
-  const report = reportFrom(done);
-  reportLines(report).forEach((l) => out(l));
-  return report;
+  let steps = 0;
+  let report;
+  try {
+    const done = await run({
+      messages,
+      // A smaller model for the grunt work is the whole reason this is a knob:
+      // the survey is reading and grepping, the synthesis is not.
+      model: config.subagentModel ?? model,
+      window: own ? own.contextWindow : config.contextWindow,
+      maxTokens: own?.maxTokens ?? config.maxTokens,
+      signal,
+      approve,
+      grant,
+      // No MCP: a local model already struggles past ~25 tools, and the
+      // sub-agent's list is meant to be the short one.
+      mcp: null,
+      tools: subagentTools(agent),
+      // The checklist is module state belonging to the task the user asked for.
+      // A sub-agent that called set_plan would clear it out from under the agent
+      // that delegated to it.
+      plan: false,
+      // Its reasoning and prose are not printed: they are not the answer, and a
+      // second stream interleaved with the caller's is unreadable. Tool calls
+      // still show, indented, so the run is not a black box.
+      stream: false,
+      out: (line) => out(nest(line)),
+      maxSteps,
+      depth: 1,
+      // Written as it goes rather than at the end. The runs worth reading are
+      // the ones that were interrupted, threw, or ran out of steps, and none
+      // of those reach the line below.
+      onStep: (msgs, n) => { steps = n; log?.step(msgs, n); },
+    });
+
+    report = reportFrom(done);
+    reportLines(report).forEach((l) => out(l));
+    return report;
+  } finally {
+    // In `finally` so an abort or a throw still closes the record and still
+    // tells the user where the partial transcript is — that is the case the
+    // transcript exists for.
+    const path = log?.finish({ report, steps });
+    out(closeLine({ ms: Date.now() - started, steps, path, ok: report !== undefined }));
+  }
 }

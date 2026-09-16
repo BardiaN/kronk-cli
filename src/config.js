@@ -79,6 +79,13 @@ export const config = {
   subagents: (process.env.KRONK_SUBAGENTS ?? String(file.subagents ?? 'true')) !== 'false',
   subagentModel: process.env.KRONK_SUBAGENT_MODEL ?? file.subagentModel ?? null,
   subagentSteps: Number(process.env.KRONK_SUBAGENT_STEPS ?? file.subagentSteps ?? 40),
+  // Each sub-agent run is written to a file as it goes, so `/tasks` can show
+  // what a delegated task actually did — see src/tasklog.js. It costs a few
+  // small files under the temp dir and nothing in the window: a transcript is
+  // never read back into a conversation, only printed.
+  taskLog: (process.env.KRONK_TASK_LOG ?? String(file.taskLog ?? 'true')) !== 'false',
+  // Same reason as modelConfigPath: so tests never go near the real one.
+  taskLogDir: process.env.KRONK_TASK_LOG_DIR ?? file.taskLogDir ?? null,
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,

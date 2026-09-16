@@ -1,9 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { config } from '../src/config.js';
 import {
   AGENTS, TASK_TOOL, taskTools, subagentTools, systemFor, runTask,
 } from '../src/subagent.js';
+import { listRuns, readRun } from '../src/tasklog.js';
+
+// Delegating writes a transcript now. Somewhere of our own, never the real one.
+config.taskLogDir = mkdtempSync(join(tmpdir(), 'kronk-subagent-'));
 
 const quiet = () => {};
 
@@ -160,4 +167,82 @@ test('a sub-agent on another model gets that model’s window, not the session�
   await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
   assert.equal(calls[1].window, 131072);
   assert.equal(calls[1].maxTokens, 16384);
+});
+
+test('a run is framed on screen: which agent, and what it cost', async () => {
+  const { run } = stubRun('found it');
+  const lines = [];
+  await runTask({ agent: 'explore', prompt: 'which tools need approval, and where is that decided' },
+    { run, out: (l) => lines.push(l) });
+
+  const open = lines[0];
+  assert.match(open, /explore/, 'two delegated runs in a row are otherwise indistinguishable');
+  assert.match(open, /which tools need approval/);
+
+  const close = lines.at(-1);
+  assert.match(close, /step/);
+  assert.match(close, /s$|json$/);
+  assert.match(close, /task-\d+\.json/, 'the report on screen is bounded — this is where the rest is');
+});
+
+test('a long prompt is cut on the opening line and whole in the transcript', async () => {
+  const prompt = `trace ${'x'.repeat(200)} home`;
+  const { run } = stubRun('done');
+  const lines = [];
+  await runTask({ agent: 'explore', prompt }, { run, out: (l) => lines.push(l) });
+
+  assert.ok(lines[0].length < 120, 'the line stays a line');
+  assert.match(lines[0], /…/);
+  assert.equal(listRuns().at(-1).prompt, prompt, 'nothing is lost on disk');
+});
+
+test('the transcript holds what the caller never sees', async () => {
+  const calls = [];
+  const run = async (opts) => {
+    calls.push(opts);
+    opts.messages.push({ role: 'assistant', content: '', tool_calls: [{ function: { name: 'read_file', arguments: '{"path":"src/sse.js"}' } }] });
+    opts.messages.push({ role: 'tool', content: 'THE WHOLE FILE' });
+    opts.onStep?.(opts.messages, 1);
+    opts.messages.push({ role: 'assistant', content: 'it is at src/sse.js:12' });
+    return opts.messages;
+  };
+
+  const report = await runTask({ agent: 'explore', prompt: 'find the parser' }, { run, out: quiet });
+  assert.equal(report, 'it is at src/sse.js:12', 'one report to the caller');
+
+  const saved = readRun(listRuns().at(-1).n);
+  assert.equal(saved.steps, 1);
+  assert.ok(JSON.stringify(saved.messages).includes('THE WHOLE FILE'),
+    'and everything it read on the file, where the window does not pay for it');
+  assert.equal(saved.report, 'it is at src/sse.js:12');
+});
+
+test('a sub-agent that throws still leaves its transcript and still says where', async () => {
+  const run = async (opts) => {
+    opts.messages.push({ role: 'assistant', content: '', tool_calls: [{ function: { name: 'bash', arguments: '{}' } }] });
+    opts.messages.push({ role: 'tool', content: 'got this far' });
+    opts.onStep?.(opts.messages, 1);
+    throw new Error('connection reset');
+  };
+  const lines = [];
+  await assert.rejects(
+    () => runTask({ agent: 'code', prompt: 'reproduce it' }, { run, out: (l) => lines.push(l) }),
+    /connection reset/);
+
+  const saved = readRun(listRuns().at(-1).n);
+  assert.equal(saved.steps, 1);
+  assert.ok(JSON.stringify(saved.messages).includes('got this far'), 'the run that died is the one worth reading');
+  assert.match(lines.at(-1), /task-\d+\.json/, 'and the user is told where it is');
+});
+
+test('with transcripts off the run is still framed, just not recorded', async () => {
+  config.taskLog = false;
+  const { run } = stubRun('done');
+  const lines = [];
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, out: (l) => lines.push(l) });
+  config.taskLog = true;
+
+  assert.match(lines[0], /explore/);
+  assert.doesNotMatch(lines.at(-1), /\.json/, 'nothing to point at');
+  assert.match(lines.at(-1), /step/, 'but still what it cost');
 });

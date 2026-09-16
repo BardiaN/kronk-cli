@@ -89,6 +89,11 @@ function endTurn(messages, { out = console.log, plan = true } = {}) {
 export async function runTurn({
   messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
   tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
+  // Called with the transcript so far after every round. Only src/subagent.js
+  // passes one: a delegated run is the transcript nobody would otherwise keep,
+  // and the round that ends it may be a throw or a step cap rather than a
+  // return, so it has to be written as it happens.
+  onStep = null,
   // The window and the output cap belong to `model`, not to the session: a
   // sub-agent may be running on a different model with a different profile.
   window = config.contextWindow, maxTokens = config.maxTokens,
@@ -368,6 +373,7 @@ export async function runTurn({
     // On the last tool result rather than in a message of its own, so the
     // round only ever adds to the prompt. Nothing already sent is touched.
     if (usePlan) carryChecklist(messages);
+    onStep?.(messages, step);
     // loop: the model now sees the tool output
   }
 }

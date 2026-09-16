@@ -561,13 +561,28 @@ export async function runTool(name, args, opts = {}) {
         // Went straight to ripgrep unchecked, so `search` with an absolute path
         // read anything on the machine while read_file was busy refusing to.
         const where = safe(args.path ?? '.');
+        // Both tools exit 1 to mean "nothing matched", which is an answer and
+        // not a failure. Reported as an error the model stops believing the
+        // tool, and spends its step budget re-phrasing and re-reading rather
+        // than using the fact it was just handed.
+        const NOTHING = '(no matches)';
         try {
           const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', args.pattern, where]);
-          return clip(stdout) || '(no matches)';
+          return clip(stdout) || NOTHING;
         } catch (e) {
-          if (e.code === 1) return '(no matches)';
-          const { stdout } = await exec('grep', ['-rn', '-m', '200', args.pattern, where]);
-          return clip(stdout) || '(no matches)';
+          if (e.code === 1) return NOTHING;
+          // No ripgrep on this machine, or it refused the pattern. grep is the
+          // floor, and it needs the same exit-1 reading the call above has —
+          // this is the branch CI never reaches, because its images ship rg.
+          try {
+            // -E because this tool advertises ripgrep-style patterns, and basic
+            // grep reads `a|b` as the three literal characters.
+            const { stdout } = await exec('grep', ['-rn', '-E', '-m', '200', args.pattern, where]);
+            return clip(stdout) || NOTHING;
+          } catch (err) {
+            if (err.code === 1) return NOTHING;
+            throw err;
+          }
         }
       }
 

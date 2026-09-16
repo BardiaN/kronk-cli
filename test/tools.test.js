@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clip, safe, session, runBash, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
+import { clip, safe, session, runBash, runTool, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
 
 // realpath, because macOS maps /var onto /private/var and the shell reports the latter
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-tools-')));
@@ -152,4 +152,62 @@ test('where it ran is printed before the output blocks, not after', async () => 
   assert.ok(out.indexOf('ran in:') < out.indexOf('stderr:'), out);
   assert.ok(out.indexOf('note: this command left') < out.indexOf('stderr:'), out);
   assert.match(out, /boom/, 'output is reported, not suppressed');
+});
+
+// ---- search, on the branch CI cannot reach ---------------------------------
+//
+// `search` prefers ripgrep and falls back to grep. CI images ship ripgrep, so
+// the fallback never runs there — and it was the fallback that reported "no
+// matches" as a failed command for every machine without an `rg` binary. These
+// shadow `rg` with a stub that fails, so the fallback is what runs.
+
+const shadowRg = (exitCode) => {
+  const dir = mkdtempSync(join(tmpdir(), 'kronk-norg-'));
+  writeFileSync(join(dir, 'rg'), `#!/bin/sh\nexit ${exitCode}\n`, { mode: 0o700 });
+  const saved = process.env.PATH;
+  process.env.PATH = `${dir}:${saved}`;
+  return () => { process.env.PATH = saved; };
+};
+
+test('a search that matches nothing is an answer, not a failed command', async () => {
+  writeFileSync(join(root, 'haystack.txt'), 'alpha\nbravo\n');
+  const restore = shadowRg(2);                      // force the grep fallback
+  try {
+    const out = await runTool('search', { pattern: 'zzz-definitely-absent', path: 'haystack.txt' }, {});
+    assert.equal(out, '(no matches)', 'grep exits 1 for no matches, exactly as rg does');
+    assert.doesNotMatch(out, /error/, 'told it failed, the model stops believing the tool');
+  } finally { restore(); }
+});
+
+test('the grep fallback still finds what is there', async () => {
+  writeFileSync(join(root, 'haystack.txt'), 'alpha\nbravo\n');
+  const restore = shadowRg(2);
+  try {
+    const out = await runTool('search', { pattern: 'bravo', path: 'haystack.txt' }, {});
+    assert.match(out, /bravo/);
+    assert.match(out, /haystack\.txt/, 'with the file:line prefix the description promises');
+  } finally { restore(); }
+});
+
+test('the fallback reads alternation as a pattern, not as three literal characters', async () => {
+  writeFileSync(join(root, 'haystack.txt'), 'alpha\nbravo\n');
+  const restore = shadowRg(2);
+  try {
+    // The tool describes itself as ripgrep-style, so this is what models write.
+    const out = await runTool('search', { pattern: 'alpha|bravo', path: 'haystack.txt' }, {});
+    // Assert on the file:line prefixes, not on the words. Without -E this
+    // search matches nothing, and the old error message quoted the pattern
+    // back — so `match(/alpha/)` passed on the failure it was meant to catch.
+    assert.doesNotMatch(out, /error/);
+    assert.match(out, /haystack\.txt:1:alpha/);
+    assert.match(out, /haystack\.txt:2:bravo/);
+  } finally { restore(); }
+});
+
+test('a search with no rg binary at all behaves the same as one with a broken rg', async () => {
+  writeFileSync(join(root, 'haystack.txt'), 'alpha\nbravo\n');
+  const restore = shadowRg(127);                    // stands in for ENOENT
+  try {
+    assert.equal(await runTool('search', { pattern: 'nope-not-here', path: 'haystack.txt' }, {}), '(no matches)');
+  } finally { restore(); }
 });

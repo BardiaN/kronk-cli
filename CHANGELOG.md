@@ -6,6 +6,12 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.5.1 — 2026-09-16
+
+### Other changes
+
+- deps: bump eslint from 10.9.1 to 10.10.0 ([#69](https://github.com/BardiaN/kronk-cli/pull/69))
+
 ## 0.5.0 — 2026-09-06
 
 ### Fixes

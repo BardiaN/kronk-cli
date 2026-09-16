@@ -1299,6 +1299,12 @@ is what sent you looking, so a second ceiling would only move the wall.
 It is **printed, not re-injected**. Looking at what a sub-agent did costs the window nothing,
 which is what keeps the trade above intact.
 
+One thing it is not: a record of what the sub-agent's tools *returned*. A transcript is the
+sub-agent's own context, and [distillation](#distillation) rewrites a large tool result before it
+enters that context — so a `read_file` that came back as 24k of source appears here as the
+summary the sub-agent actually worked from, marked as distilled. That is the honest rendering:
+the raw text was never in its conversation either, and the line says so.
+
 Run 3 is the case this exists for. A run that was interrupted, that threw, or that ran out of
 steps never reaches a tidy end at which to write a transcript, so the file is rewritten after
 every step instead of once at the finish, and the record says how it ended rather than only that

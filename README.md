@@ -681,6 +681,7 @@ Two consequences worth knowing:
 | `/thinking` | show or hide the model's reasoning |
 | `/think` | turn reasoning off entirely — much faster |
 | `/agents` | the sub-agents `task` can delegate to, and what each may touch |
+| `/tasks [n]` | sub-agent runs this session; with `n`, that one in full |
 | `/mcp` | list attached MCP servers and their tools |
 | `/context` | how much of the context window is used |
 | `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
@@ -714,6 +715,8 @@ Two consequences worth knowing:
 | `KRONK_SUBAGENTS` | `true` | `false` removes the `task` tool |
 | `KRONK_SUBAGENT_MODEL` | the main model | Model sub-agents run on — substring match, same as `KRONK_MODEL` |
 | `KRONK_SUBAGENT_STEPS` | `40` | Tool-call cap for one delegated task |
+| `KRONK_TASK_LOG` | `true` | `false` stops writing sub-agent transcripts, and `/tasks` says so |
+| `KRONK_TASK_LOG_DIR` | the temp dir | Where transcripts are written |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
@@ -1239,6 +1242,7 @@ ever comes back is its report.
 › which tools in this repo need approval, and where is that decided?
 
   1 ⚙ task explore: list every tool definition in src/, say which are gated and where
+   ┌ explore · list every tool definition in src/, say which are gated…
    │   1/40 ⚙ search /def\(/ in src
    │   ✓ 9 lines
    │   2/40 ⚙ read src/tools.js
@@ -1249,13 +1253,15 @@ ever comes back is its report.
    Six built-in tools. write_file and bash are gated, by NEEDS_APPROVAL at
    src/tools.js:261. MCP tools are gated by name, mcpNeedsApproval at :270.
    read_file, list_dir, search, set_plan and task are not gated.
+   └ 3 steps · 11.4s · /tmp/kronk-cli/mfa1k2-8817/task-001.json
   ✓ 3 lines
 
   `write_file` and `bash`, from the `NEEDS_APPROVAL` set in src/tools.js:246…
 ```
 
 `│` marks the sub-agent's own loop; the unprefixed lines are its report, which is what the main
-agent receives as the tool result.
+agent receives as the tool result. `┌` and `└` fence one run, so two in a row are told apart in
+scrollback, and the closing line says what it cost and where the rest of it went.
 
 Three files were read. None of them is in your conversation: the 800-odd lines they cost were
 spent in a context that no longer exists, and all that is left in your window is the four-line
@@ -1264,6 +1270,51 @@ command output, one level up.
 
 Both agents run against the same Kronk server, so nothing leaves the machine that was not
 already leaving it.
+
+### Reading a run back
+
+The report on screen is dimmed and capped at fourteen lines. That used to be the end of it: what
+the sub-agent read, what it ran, and any line fifteen of its report went out of scope with its
+context. Delegating is supposed to cost the *conversation* nothing — it was never supposed to
+cost you the ability to check.
+
+So each run is written to a file as it goes, and `/tasks` reads them back.
+
+```console
+› /tasks
+
+  ●  1  explore 6 steps · 11.4s      list every tool definition in src/, say whi…
+  ●  2  code    23 steps · 1m4s       reproduce the compaction failure in test/co…
+  ●  3  explore 2 steps · stopped     trace where the sandbox root is decided
+
+  /tasks <n> for one in full · /tmp/kronk-cli/mfa1k2-8817
+```
+
+Green finished, yellow stopped before it reported, blue still running.
+
+`/tasks 2` prints that run whole: the prompt as it was delegated, every tool call with its
+arguments, every result in full, and the untruncated report. Nothing is cut — the bounded report
+is what sent you looking, so a second ceiling would only move the wall.
+
+It is **printed, not re-injected**. Looking at what a sub-agent did costs the window nothing,
+which is what keeps the trade above intact.
+
+One thing it is not: a record of what the sub-agent's tools *returned*. A transcript is the
+sub-agent's own context, and [distillation](#distillation) rewrites a large tool result before it
+enters that context — so a `read_file` that came back as 24k of source appears here as the
+summary the sub-agent actually worked from, marked as distilled. That is the honest rendering:
+the raw text was never in its conversation either, and the line says so.
+
+Run 3 is the case this exists for. A run that was interrupted, that threw, or that ran out of
+steps never reaches a tidy end at which to write a transcript, so the file is rewritten after
+every step instead of once at the finish, and the record says how it ended rather than only that
+it did. The run that went wrong is the one you want to read.
+
+Transcripts live in the system temp directory, one directory per session, `0700` with `0600`
+files — they hold your project's file contents and command output. A clean exit removes the
+session's own; startup sweeps anything older than a day, which is what catches the sessions a
+crash left behind. Fifty runs are kept per session, oldest dropped first, so a long autonomous
+run cannot fill the disk. `KRONK_TASK_LOG=false` writes nothing at all.
 
 ### It is not parallelism
 
@@ -1334,6 +1385,7 @@ earning it.
 kronk-cli --no-subagents             # remove the task tool entirely
 KRONK_SUBAGENT_MODEL=<id> kronk-cli  # run the grunt work on a different model
 KRONK_SUBAGENT_STEPS=80 kronk-cli    # a longer leash per task
+KRONK_TASK_LOG=false kronk-cli       # keep no transcripts of what sub-agents did
 ```
 
 A sub-agent gets the same startup scan of your project the main agent got, so it starts knowing

@@ -33,6 +33,11 @@ ${c.cyan('  ██ kronk-cli')}  ${c.grey('· local agent, no network')}
 
 const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
 
+/** `4.2s` under a minute, `1m4s` above it. */
+export const elapsed = (ms) => (ms < 60000
+  ? `${(ms / 1000).toFixed(1)}s`
+  : `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`);
+
 /** `18k/131k 14% ▓▓░░░░░░░░` — how full the window is after this turn. */
 export function fmtContext(used, window) {
   if (!window || !used) return '';

@@ -75,6 +75,9 @@ function endTurn(messages, { out = console.log, plan = true } = {}) {
   return messages;
 }
 
+/** Stands in for `liveLine()` under a pane, which is drawing the same seconds itself. */
+const QUIET_LIVE = { update() {}, done() {} };
+
 /**
  * Run one user turn to completion, looping while the model requests tools.
  *
@@ -89,6 +92,10 @@ function endTurn(messages, { out = console.log, plan = true } = {}) {
 export async function runTurn({
   messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
   tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
+  // Print nothing that redraws the current line — the spinner and the live
+  // command line. Set by src/subagent.js when a pane is drawing the run, and
+  // the pane owns the bottom of the screen for as long as it is up.
+  quiet = false,
   // Called with the transcript so far after every round. Only src/subagent.js
   // passes one: a delegated run is the transcript nobody would otherwise keep,
   // and the round that ends it may be a throw or a step cap rather than a
@@ -125,7 +132,7 @@ export async function runTurn({
           : '(stopped: step cap reached)' });
       return endTurn(messages, { out, plan: usePlan });
     }
-    let sp = spinner(depth ? 'sub-agent' : 'thinking');
+    let sp = quiet ? null : spinner(depth ? 'sub-agent' : 'thinking');
     let text = '';
     let reasoning = '';
     let calls = [];
@@ -342,7 +349,7 @@ export async function runTurn({
           result = `error: the sub-agent failed — ${e.message}`;
         }
       } else {
-        const live = liveLine();
+        const live = quiet ? QUIET_LIVE : liveLine();
         try {
           result = isMcp
             ? await mcp.call(call.name, args)

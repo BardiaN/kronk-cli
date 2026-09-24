@@ -2,6 +2,7 @@ import { def, TOOLS } from './tools.js';
 import { config } from './config.js';
 import { c, elapsed } from './ui.js';
 import { startRun } from './tasklog.js';
+import { livePane } from './pane.js';
 
 /**
  * Sub-agents: one delegated task, one throwaway context.
@@ -152,13 +153,17 @@ export function openLine(agent, prompt) {
  *
  * This is what makes `reportLines`' "…N more lines" actionable: the report on
  * screen is bounded, and now there is somewhere to go for the rest of it and
- * for everything the sub-agent read on the way.
+ * for everything the sub-agent read on the way. Once the pane erases itself it
+ * carries more than that — it is all that is left of the run on screen.
  */
-export function closeLine({ ms, steps, path, ok }) {
+export function closeLine({ ms, steps, n, ok }) {
   // A run that threw or was interrupted is the one worth reading, so the line
   // that points at its transcript must not read like a clean finish.
   const bits = [`${steps} step${steps === 1 ? '' : 's'}`, elapsed(ms), ...(ok ? [] : ['stopped'])];
-  if (path) bits.push(path);
+  // The command that reads the transcript, not the file it reads. The absolute
+  // path under the temp dir is long, mostly noise, and not a thing anyone would
+  // type; `/tasks 3` is both shorter and the answer to "how do I see it".
+  if (n) bits.push(`/tasks ${n} for the transcript`);
   const line = `   └ ${bits.join(' · ')}`;
   return ok ? c.grey(line) : c.yellow(line);
 }
@@ -201,6 +206,9 @@ function reportFrom(messages) {
  */
 export async function runTask(args, {
   run, model, signal, approve, grant, out = console.log, maxSteps = config.subagentSteps,
+  // Injected the same way `run` and `out` are, and for the same reason: the
+  // pane's behaviour is a screen behaviour, and a test has no screen.
+  pane: makePane = livePane,
 }) {
   const agent = args?.agent ?? 'explore';
   const prompt = String(args?.prompt ?? '').trim();
@@ -223,7 +231,15 @@ export async function runTask(args, {
   // model call still leaves a file saying which task was asked for.
   const log = startRun({ agent, prompt, model: config.subagentModel ?? model });
   const started = Date.now();
-  out(openLine(agent, prompt));
+
+  // On a terminal the run is drawn in a box that erases itself; on a pipe, a
+  // dumb terminal or an `--auto` run nobody is watching, `livePane` hands back
+  // an inert one and everything below takes exactly the path it took before
+  // the pane existed. The transcript is written either way, which is what
+  // makes erasing the box safe — see src/pane.js.
+  const pane = makePane({ agent, maxSteps, signal });
+  if (pane.enabled) pane.open();
+  else out(openLine(agent, prompt));
 
   let steps = 0;
   let report;
@@ -236,8 +252,11 @@ export async function runTask(args, {
       window: own ? own.contextWindow : config.contextWindow,
       maxTokens: own?.maxTokens ?? config.maxTokens,
       signal,
-      approve,
-      grant,
+      // Wrapped, not replaced: delegation is still not a way to get a command
+      // past the user. The wrapper only wipes the box first, so the question is
+      // asked on a clear screen and nothing redraws over it while it waits.
+      approve: pane.shield(approve),
+      grant: pane.shield(grant),
       // No MCP: a local model already struggles past ~25 tools, and the
       // sub-agent's list is meant to be the short one.
       mcp: null,
@@ -250,23 +269,33 @@ export async function runTask(args, {
       // second stream interleaved with the caller's is unreadable. Tool calls
       // still show, indented, so the run is not a black box.
       stream: false,
-      out: (line) => out(nest(line)),
+      out: pane.enabled ? (line) => pane.line(line) : (line) => out(nest(line)),
+      // The pane is already the live view, and the spinner and the per-command
+      // live line both rewrite the current line with `\r` — which is the last
+      // row of the box. Two things redrawing the same row is the one way this
+      // can look broken, so below a pane there is only one of them.
+      quiet: pane.enabled,
       maxSteps,
       depth: 1,
       // Written as it goes rather than at the end. The runs worth reading are
       // the ones that were interrupted, threw, or ran out of steps, and none
       // of those reach the line below.
-      onStep: (msgs, n) => { steps = n; log?.step(msgs, n); },
+      onStep: (msgs, n) => { steps = n; pane.step(n); log?.step(msgs, n); },
     });
 
     report = reportFrom(done);
+    // Before the report, so the box is gone by the time the answer lands in
+    // the scrollback it is keeping clean.
+    pane.close();
     reportLines(report).forEach((l) => out(l));
     return report;
   } finally {
     // In `finally` so an abort or a throw still closes the record and still
     // tells the user where the partial transcript is — that is the case the
-    // transcript exists for.
-    const path = log?.finish({ report, steps });
-    out(closeLine({ ms: Date.now() - started, steps, path, ok: report !== undefined }));
+    // transcript exists for. `close` is idempotent; the success path already
+    // called it above.
+    pane.close();
+    log?.finish({ report, steps });
+    out(closeLine({ ms: Date.now() - started, steps, n: log?.n, ok: report !== undefined }));
   }
 }

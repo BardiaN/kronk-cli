@@ -6,6 +6,20 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.7.0 — 2026-09-24
+
+### Features
+
+- draw a sub-agent run in a pane that erases itself when it ends ([#82](https://github.com/BardiaN/kronk-cli/pull/82))
+
+### Build
+
+- bump eslint from 10.10.0 to 10.11.0 ([#80](https://github.com/BardiaN/kronk-cli/pull/80))
+
+### CI
+
+- bump the codeql-action group with 3 updates ([#81](https://github.com/BardiaN/kronk-cli/pull/81))
+
 ## 0.6.1 — 2026-09-16
 
 ### Fixes

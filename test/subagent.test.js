@@ -181,8 +181,9 @@ test('a run is framed on screen: which agent, and what it cost', async () => {
 
   const close = lines.at(-1);
   assert.match(close, /step/);
-  assert.match(close, /s$|json$/);
-  assert.match(close, /task-\d+\.json/, 'the report on screen is bounded — this is where the rest is');
+  assert.match(close, /\d+\.\ds|\dm\ds/, 'and how long it took');
+  assert.match(close, /\/tasks \d+ for the transcript/,
+    'the report on screen is bounded — this is how you reach the rest');
 });
 
 test('a long prompt is cut on the opening line and whole in the transcript', async () => {
@@ -232,7 +233,10 @@ test('a sub-agent that throws still leaves its transcript and still says where',
   const saved = readRun(listRuns().at(-1).n);
   assert.equal(saved.steps, 1);
   assert.ok(JSON.stringify(saved.messages).includes('got this far'), 'the run that died is the one worth reading');
-  assert.match(lines.at(-1), /task-\d+\.json/, 'and the user is told where it is');
+  assert.match(lines.at(-1), new RegExp(`/tasks ${saved.n} for the transcript`),
+    'and the user is told how to read it');
+  assert.doesNotMatch(lines.at(-1), /task-\d+\.json/,
+    'by the command, not by an absolute path under the temp dir');
 });
 
 test('with transcripts off the run is still framed, just not recorded', async () => {
@@ -245,4 +249,90 @@ test('with transcripts off the run is still framed, just not recorded', async ()
   assert.match(lines[0], /explore/);
   assert.doesNotMatch(lines.at(-1), /\.json/, 'nothing to point at');
   assert.match(lines.at(-1), /step/, 'but still what it cost');
+});
+
+/** A pane that records instead of drawing, standing in for a terminal. */
+function fakePane() {
+  const fed = [];
+  const p = {
+    enabled: true, fed, closed: 0, steps: [],
+    open() { fed.push('[open]'); },
+    line(l) { fed.push(l); },
+    step(n) { p.steps.push(n); },
+    collapse() {},
+    close() { p.closed += 1; },
+    shield: (fn) => fn && (async (...a) => { fed.push('[shield]'); return fn(...a); }),
+  };
+  return p;
+}
+
+test('on a terminal the run goes into the pane, not into the conversation', async () => {
+  const { run, calls } = stubRun('it is at src/sse.js:12');
+  const lines = [];
+  const pane = fakePane();
+  await runTask({ agent: 'explore', prompt: 'find it' },
+    { run, out: (l) => lines.push(l), pane: () => pane });
+
+  // Everything the sub-agent prints is the pane's, and the pane throws it away.
+  calls[0].out('1/40 ⚙ read src/sse.js');
+  assert.ok(pane.fed.includes('1/40 ⚙ read src/sse.js'));
+  assert.ok(!lines.some((l) => l.includes('read src/sse.js')),
+    'the scrollback never sees a step of someone else\'s work');
+
+  // What is left is the answer and the line that says where the rest went.
+  assert.ok(lines.some((l) => l.includes('it is at src/sse.js:12')), 'the report still prints');
+  assert.match(lines.at(-1), /\/tasks \d+ for the transcript/);
+  assert.ok(!lines.some((l) => l.includes('┌')), 'and no opening frame, because the box was one');
+});
+
+test('the pane is wiped before the report lands, and closed even when the run throws', async () => {
+  const pane = fakePane();
+  const lines = [];
+  await runTask({ agent: 'explore', prompt: 'find it' },
+    { run: stubRun('done').run, out: (l) => lines.push(l), pane: () => pane });
+  assert.ok(pane.closed >= 1, 'closed on the way out');
+
+  const pane2 = fakePane();
+  await assert.rejects(() => runTask({ agent: 'code', prompt: 'reproduce' }, {
+    run: async () => { throw new Error('connection reset'); },
+    out: quiet, pane: () => pane2,
+  }), /connection reset/);
+  assert.equal(pane2.closed, 1, 'and closed from the `finally` when it dies — a box left drawn is a hang');
+});
+
+test('the sub-agent is silenced under a pane, because the pane is the live view', async () => {
+  const { run, calls } = stubRun('done');
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, out: quiet, pane: () => fakePane() });
+  assert.equal(calls[0].quiet, true);
+
+  const plain = stubRun('done');
+  await runTask({ agent: 'explore', prompt: 'look' }, { run: plain.run, out: quiet });
+  assert.equal(plain.calls[0].quiet, false, 'and not silenced when there is no pane to fight with');
+});
+
+test('approval still stops the run, and the pane gets out of its way', async () => {
+  const { run, calls } = stubRun('done');
+  const pane = fakePane();
+  const asked = [];
+  await runTask({ agent: 'code', prompt: 'change it' }, {
+    run, out: quiet, pane: () => pane,
+    approve: async (name) => { asked.push(name); return false; },
+    grant: async () => 'no',
+  });
+
+  assert.equal(await calls[0].approve('write_file'), false, 'a refusal is still a refusal');
+  assert.deepEqual(asked, ['write_file'], 'and it still reaches the user');
+  assert.ok(pane.fed.includes('[shield]'), 'having wiped the box first');
+  assert.equal(await calls[0].grant('gh', ['~/.config/gh']), 'no');
+});
+
+test('step numbers reach the pane header as well as the transcript', async () => {
+  const run = async (opts) => {
+    opts.onStep?.(opts.messages, 4);
+    opts.messages.push({ role: 'assistant', content: 'done' });
+    return opts.messages;
+  };
+  const pane = fakePane();
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, out: quiet, pane: () => pane });
+  assert.deepEqual(pane.steps, [4]);
 });

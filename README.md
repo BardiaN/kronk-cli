@@ -1238,30 +1238,53 @@ The model can hand one job to a **sub-agent**: a fresh agent with its own contex
 own tool loop, and no memory of your conversation. It runs the task, and the only thing that
 ever comes back is its report.
 
+While it runs, it draws in a box below the prompt that redraws in place:
+
 ```console
 › which tools in this repo need approval, and where is that decided?
 
   1 ⚙ task explore: list every tool definition in src/, say which are gated and where
-   ┌ explore · list every tool definition in src/, say which are gated…
-   │   1/40 ⚙ search /def\(/ in src
-   │   ✓ 9 lines
-   │   2/40 ⚙ read src/tools.js
-   │   ✓ 587 lines
-   │   3/40 ⚙ read src/subagent.js
-   │   ✓ 211 lines
-   │   2104→380 tok · 58.1 tok/s · 1980 cached
+  ┌─ explore ──────────────────────────────────────── 6/40 · 48s ─┐
+  │ 4/40 ⚙ read src/tools.js                                      │
+  │ ✓ 587 lines                                                   │
+  │ 5/40 ⚙ search /NEEDS_APPROVAL/ in src                         │
+  │ ✓ 3 lines                                                     │
+  │ 6/40 ⚙ read src/subagent.js                                   │
+  └─ esc to collapse · ctrl-c to stop ────────────────────────────┘
+```
+
+When it finishes the box is erased, and what is left in the scrollback is the answer and one
+line saying what the run cost:
+
+```console
+  1 ⚙ task explore: list every tool definition in src/, say which are gated and where
    Six built-in tools. write_file and bash are gated, by NEEDS_APPROVAL at
    src/tools.js:261. MCP tools are gated by name, mcpNeedsApproval at :270.
    read_file, list_dir, search, set_plan and task are not gated.
-   └ 3 steps · 11.4s · /tmp/kronk-cli/mfa1k2-8817/task-001.json
+   └ 3 steps · 11.4s · /tasks 1 for the transcript
   ✓ 3 lines
 
   `write_file` and `bash`, from the `NEEDS_APPROVAL` set in src/tools.js:246…
 ```
 
-`│` marks the sub-agent's own loop; the unprefixed lines are its report, which is what the main
-agent receives as the tool result. `┌` and `└` fence one run, so two in a row are told apart in
-scrollback, and the closing line says what it cost and where the rest of it went.
+The box is the run's only appearance on screen, and that is deliberate. A nine-step survey
+printed into the conversation leaves forty lines of someone else's work between the question
+you asked and the answer you got; scroll back ten minutes later and the conversation is mostly
+sub-agent. While the run is going a live view is the only sign the thing is alive, and it is
+where you notice one thrashing — but once it has ended, almost none of it is worth keeping.
+
+Nothing is lost by erasing it. Everything the box shows is written to the run's transcript as
+it happens, so the box is a view of a file that outlives it, and `/tasks 1` below is how you
+read it back. Three keys and one fallback are worth knowing:
+
+- **`esc` collapses the box immediately** and the run carries on. For when you have seen enough
+  and want your screen back.
+- **`ctrl-c`** stops the run, as it stops anything else.
+- **An approval prompt wipes the box first.** A `code` sub-agent's `write_file` and `bash` stop
+  for the same question the main agent's do, and that question gets the terminal to itself.
+- **On a pipe or a dumb terminal there is no box at all.** `kronk-cli "…" | grep`, a CI job and
+  an `--auto` run nobody is watching each get the plain nested lines instead, in order, with no
+  cursor control in them.
 
 Three files were read. None of them is in your conversation: the 800-odd lines they cost were
 spent in a context that no longer exists, and all that is left in your window is the four-line
@@ -1273,10 +1296,10 @@ already leaving it.
 
 ### Reading a run back
 
-The report on screen is dimmed and capped at fourteen lines. That used to be the end of it: what
-the sub-agent read, what it ran, and any line fifteen of its report went out of scope with its
-context. Delegating is supposed to cost the *conversation* nothing — it was never supposed to
-cost you the ability to check.
+The report on screen is dimmed and capped at fourteen lines, and the box it ran in is gone. That
+used to be the end of it: what the sub-agent read, what it ran, and any line fifteen of its
+report went out of scope with its context. Delegating is supposed to cost the *conversation*
+nothing — it was never supposed to cost you the ability to check.
 
 So each run is written to a file as it goes, and `/tasks` reads them back.
 

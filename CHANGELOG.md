@@ -6,6 +6,14 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.0 — 2026-09-28
+
+### Features
+
+- **rescue**: a job queue an external caller can submit to, follow up on, and collect from ([#89](https://github.com/BardiaN/kronk-cli/pull/89))
+- **version**: report the running version and say when a newer one is available ([#87](https://github.com/BardiaN/kronk-cli/pull/87))
+- **subagent**: let a delegated task name the model it runs on ([#88](https://github.com/BardiaN/kronk-cli/pull/88))
+
 ## 0.7.0 — 2026-09-24
 
 ### Features

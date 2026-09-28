@@ -19,6 +19,7 @@ import { deferredPrompt } from './prompt.js';
 import { AGENTS, setServedModels } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
 import { runSetup, runKronk } from './setup.js';
+import { runRescue } from './rescue.js';
 import { VERSION, parseKronkVersion } from './version.js';
 import { updateStatus } from './update.js';
 
@@ -43,6 +44,22 @@ if (args.help) {
     kronk-cli setup [--model <id>] [--context <n>] [-y] [--dry-run]
                                     pull the model, write its /AGENT profile to
                                     ~/.kronk/models/model_config.yaml, restart Kronk
+
+    kronk-cli rescue "<prompt>" [--role explore|code] [--model <id>] [-y|-a] [--steps <n>] [--json]
+                                    submit a self-contained task; runs detached,
+                                    prints a job id and exits immediately
+    kronk-cli rescue status <id> [--json]
+                                    queued | running (step n) | done | stopped
+                                    | interrupted | failed
+    kronk-cli rescue wait <id> [--json]
+                                    block until the job lands, then print its
+                                    report; exit code is done 0, stopped 1,
+                                    interrupted 2, failed 3
+    kronk-cli rescue result <id> [--json]
+                                    print the report; refuses (exit 4) if the
+                                    job has not reached one of those four states yet
+                                    without -y/-a, a rescue job refuses any tool
+                                    that needs approval rather than asking nobody
 
   OPTIONS
     -l, --models        list the models Kronk is serving, then exit
@@ -441,6 +458,13 @@ async function main() {
       yes: args.yes,
       dryRun: args.dryRun,
     });
+    return;
+  }
+
+  // Same reasoning as `setup` just above: reserved before the one-shot path
+  // gets a chance to read the rest of the line as a prompt.
+  if (args.words[0] === 'rescue') {
+    process.exitCode = await runRescue(args);
     return;
   }
 

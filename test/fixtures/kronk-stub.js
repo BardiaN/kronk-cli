@@ -29,6 +29,11 @@ import { createServer } from 'node:http';
 export function startStub({
   ids = [], resident = [], fail = {}, template = null, modelInfoStatus = 200, turns = [],
   samplingMetadata = null, samplingParameters = null,
+  // Holds a streamed reply open for this long before writing anything. Only
+  // one suite needs it (test/rescue.test.js, proving a job is observably
+  // `running` and not just instantaneously `done`) — everyone else leaves it
+  // at 0 and sees no change at all.
+  delayMs = 0,
 } = {}) {
   const chat = [];
   const queue = [...turns];
@@ -75,7 +80,8 @@ export function startStub({
     if (url === '/v1/chat/completions') {
       let raw = '';
       req.on('data', (d) => { raw += d; });
-      return req.on('end', () => {
+      return req.on('end', async () => {
+        if (delayMs) await new Promise((r) => { setTimeout(r, delayMs); });
         const body = JSON.parse(raw);
         chat.push(body);
         if (fail[body.model]) {

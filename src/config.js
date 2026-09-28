@@ -92,6 +92,11 @@ export const config = {
   taskLog: (process.env.KRONK_TASK_LOG ?? String(file.taskLog ?? 'true')) !== 'false',
   // Same reason as modelConfigPath: so tests never go near the real one.
   taskLogDir: process.env.KRONK_TASK_LOG_DIR ?? file.taskLogDir ?? null,
+  // Where `kronk-cli rescue` keeps its job records — src/rescueStore.js.
+  // Deliberately not taskLogDir: that directory's lifetime is owned by
+  // src/tasklog.js's sweep() and cleanup(), and a rescue record has to
+  // survive both, so it lives somewhere neither of them has ever heard of.
+  rescueDir: process.env.KRONK_RESCUE_DIR ?? file.rescueDir ?? null,
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,

@@ -12,7 +12,7 @@ import { maybeDistill } from './distill.js';
 import {
   carryChecklist, clearPlan, openItems, outstandingLines, planLines, pushNudge,
 } from './plan.js';
-import { runTask, taskTools, TASK_TOOL } from './subagent.js';
+import { runTask, taskTools } from './subagent.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
 
@@ -285,7 +285,12 @@ export async function runTurn({
       // The same list the model was offered, not just the name it used: with
       // delegation off, or below the top level, a `task` call is a call to a
       // tool that does not exist and falls through to runTool saying so.
-      const isTask = !isMcp && call.name === 'task' && tools.includes(TASK_TOOL);
+      //
+      // By name, not by identity — src/subagent.js rebuilds the task tool's
+      // definition object whenever the served-model list changes, so an
+      // object captured in `tools` at the top of this turn need not be the
+      // same reference `taskTools` would hand back if asked again now.
+      const isTask = !isMcp && call.name === 'task' && tools.some((t) => t.function.name === 'task');
       const label = isMcp
         ? `${c.magenta('⚙')} ${call.name} ${c.grey(JSON.stringify(args).slice(0, 120))}`
         : `${c.blue(`⚙ ${describe(call.name, args)}`)}`;

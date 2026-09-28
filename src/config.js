@@ -77,6 +77,12 @@ export const config = {
   // one is not: nobody is watching a sub-agent, and its report is worth less
   // than the window it would spend earning it.
   subagents: (process.env.KRONK_SUBAGENTS ?? String(file.subagents ?? 'true')) !== 'false',
+  // The default model for a task that names none. A task's own `model`
+  // argument, when it has one, wins over this — see the `task` tool in
+  // src/subagent.js. Either way, the chosen model's window and output cap
+  // are resolved per model, not stored here: src/subagent.js keeps its own
+  // cache, because which limits apply now depends on the task, not the
+  // session.
   subagentModel: process.env.KRONK_SUBAGENT_MODEL ?? file.subagentModel ?? null,
   subagentSteps: Number(process.env.KRONK_SUBAGENT_STEPS ?? file.subagentSteps ?? 40),
   // Each sub-agent run is written to a file as it goes, so `/tasks` can show
@@ -101,9 +107,6 @@ export const config = {
   projectPrimer: null,
   contextWindow: null,   // filled in at boot from the chosen model's profile
   nativeContext: null,
-  // The sub-agent model's own limits, when one is configured. A sub-agent on
-  // a 32k model must not compact against the main model's 131k window.
-  subagentLimits: null,
   templatePreservesThinking: false,   // filled in at boot from the model's template
   samplingOverride: null,   // filled in at boot: params where the profile overrides the model's own
   rcPath: RC,

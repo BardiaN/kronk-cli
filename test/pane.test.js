@@ -107,6 +107,38 @@ test('with no terminal the pane is inert and the caller needs no branch', () => 
   pane.open(); pane.line('anything'); pane.step(3); pane.collapse(); pane.close();
 });
 
+test('the header names the model a task was sent to, and only when it was given one', () => {
+  useTheme({ name: 'dark', colors: 0 });
+
+  // The issue this exists for asks for the model "on the sub-agent's opening
+  // line and in the pane". The opening line is only used when there is no
+  // pane, so without this the pane half of that had no coverage: runTask was
+  // tested for handing the model over, never for it reaching the box.
+  const withModel = fakeTty();
+  livePane({
+    agent: 'explore', model: 'ggml-org/qwen2.5-coder-1.5b-q8_0',
+    maxSteps: 6, stream: withModel, tickMs: 10_000, now: () => 0,
+  }).open();
+  assert.match(withModel.text, /┌─ explore · ggml-org\/qwen2\.5-coder-1\.5b-q8_0 /,
+    'a run that paid a cold load says which model it paid it for');
+
+  // Two path segments, not one: every profile of every model ends in the same
+  // last segment, so that alone would name nothing.
+  const profiled = fakeTty();
+  livePane({
+    agent: 'code', model: 'unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT',
+    maxSteps: 6, stream: profiled, tickMs: 10_000, now: () => 0,
+  }).open();
+  assert.match(profiled.text, /┌─ code · Qwen3\.6-35B-A3B-UD-Q4_K_M\/AGENT /);
+
+  // And a run on the session's own model draws exactly the header it always did.
+  const plain = fakeTty();
+  livePane({ agent: 'explore', maxSteps: 6, stream: plain, tickMs: 10_000, now: () => 0 }).open();
+  assert.match(plain.text, /┌─ explore ─/);
+  assert.ok(!/┌─ explore ·/.test(plain.text),
+    'no separator after the role with nothing to separate it from');
+});
+
 test('opening draws the box once, and a new line redraws it in place', () => {
   useTheme({ name: 'dark', colors: 0 });
   const stream = fakeTty();

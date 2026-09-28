@@ -28,6 +28,16 @@ rm -rf "$LIB"
 mkdir -p "$LIB" "$BIN"
 cp -R "$tmp/src" "$tmp/package.json" "$LIB/"
 
+# This route has no package manager to ask later whether a newer release
+# exists, and leaves no other record of where it came from. The receipt is
+# not an update check — nothing here contacts anything — it just makes
+# `kronk-cli --version` honest about a manual install and lets the running
+# program show a plain "re-run this script" nudge instead of staying silent
+# forever. See src/update.js's installScriptHint.
+cat > "$LIB/.install-receipt.json" <<JSON
+{"version":"${VERSION#v}","source":"install.sh","installedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+JSON
+
 cat > "$BIN/kronk-cli" <<SH
 #!/usr/bin/env bash
 exec node "$LIB/src/index.js" "\$@"

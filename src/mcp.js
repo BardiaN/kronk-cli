@@ -3,9 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { c } from './ui.js';
+import { VERSION } from './version.js';
 
 const PROTOCOL = '2025-06-18';
-const CLIENT = { name: 'kronk-cli', version: '0.1.0' };
+// Six releases carried '0.1.0' here regardless of what package.json actually
+// said, because nothing read the real number. VERSION is that number.
+const CLIENT = { name: 'kronk-cli', version: VERSION };
 const CALL_TIMEOUT = 120_000;
 const START_TIMEOUT = 20_000;
 

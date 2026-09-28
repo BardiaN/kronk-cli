@@ -18,7 +18,9 @@ import { parseArgv } from './argv.js';
 import { deferredPrompt } from './prompt.js';
 import { AGENTS, setServedModels } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
-import { runSetup } from './setup.js';
+import { runSetup, runKronk } from './setup.js';
+import { VERSION, parseKronkVersion } from './version.js';
+import { updateStatus } from './update.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
@@ -57,6 +59,8 @@ if (args.help) {
         --no-subagents  remove the task tool; no delegation
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
+    -v, --version       print the kronk-cli version, and Kronk's if it can be
+                        had without a network call, then exit
         --              end option parsing; everything after is the prompt
 
   ENVIRONMENT
@@ -83,9 +87,29 @@ if (args.help) {
                         from what Kronk is serving, see /agents
     KRONK_SUBAGENT_STEPS
                         tool-call cap for one delegated task (default 40)
+    KRONK_UPDATE_CHECK  false to never ask the package manager whether a
+                        newer kronk-cli exists (default true)
 
   Config file: ~/.kronk-cli.json
 `);
+  process.exit(0);
+}
+
+if (args.version) {
+  // package.json's version, not a network call, not the server — this must
+  // print with no Kronk running, which is the common case for `--version`.
+  console.log(`kronk-cli ${VERSION}`);
+  // A cheap, short-timeout, local-only ask: no server round trip, and never
+  // held open past the timeout if `kronk` itself hangs. Kronk's own API
+  // exposes no version field anywhere client.js already reads (checked
+  // before writing this), so the binary on disk is the only source there is.
+  try {
+    const { code, output } = await runKronk(['--version'], { timeoutMs: 3000 });
+    const v = code === 0 ? parseKronkVersion(output) : null;
+    if (v) console.log(`kronk    ${v}`);
+  } catch {
+    // No `kronk` on PATH, or it did not behave — say nothing rather than guess.
+  }
   process.exit(0);
 }
 
@@ -460,9 +484,14 @@ async function main() {
     },
   });
 
+  // Synchronous and cheap — a cache-file read, never a subprocess on this
+  // path — so it costs nothing to call before `boot()`'s network round trips.
+  // See src/update.js for why this never waits on a package manager.
+  const update = updateStatus();
+
   await boot();
   const { content, ctx } = await systemMessage(AUTO);
-  console.log(banner(config.model, config.baseUrl));
+  console.log(banner(config.model, config.baseUrl, update));
 
   // Information, not a failure: the profile is doing exactly what it was
   // told to, it's just not what the model's own GGUF recommends. One-shot

@@ -24,12 +24,26 @@ export const c = {
   grey: wrap('grey'),
 };
 
-export const banner = (model, url) => `
-${c.cyan('  ██ kronk-cli')}  ${c.grey('· local agent, no network')}
-  ${c.grey('model')}  ${c.bold(model)}
-  ${c.grey('server')} ${url}
-  ${c.grey('/help for commands · Ctrl-C to interrupt · /exit to quit')}
-`;
+/** `{current, latest, hint}` when a newer release exists; `{current, hint}` when only the route is known (see src/update.js). */
+const fmtCliUpdate = (u) => (u.latest
+  ? `kronk-cli ${u.current} → ${u.latest} · run: ${u.hint}`
+  : `kronk-cli ${u.current} · ${u.hint}`);
+
+/**
+ * `update` is optional and, when there is nothing to report, this renders
+ * exactly what it always has — a session with no news prints no extra line.
+ * See src/update.js for how `update.cli` is decided; this function only lays
+ * it out.
+ */
+export const banner = (model, url, update) => [
+  '',
+  `${c.cyan('  ██ kronk-cli')}  ${c.grey('· local agent, no network')}`,
+  `  ${c.grey('model')}  ${c.bold(model)}`,
+  `  ${c.grey('server')} ${url}`,
+  ...(update?.cli ? [`  ${c.grey('update')}  ${fmtCliUpdate(update.cli)}`] : []),
+  `  ${c.grey('/help for commands · Ctrl-C to interrupt · /exit to quit')}`,
+  '',
+].join('\n');
 
 const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
 

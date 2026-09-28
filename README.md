@@ -530,6 +530,70 @@ run (`kronk-cli "prompt"`) prints no banner and prints nothing here either.
 
 ---
 
+## Checking for updates
+
+`kronk-cli --version` prints what is actually running:
+
+```console
+$ kronk-cli --version
+kronk-cli 0.7.0
+kronk    1.32.7
+```
+
+The second line is `kronk --version`, read through the same `runKronk` helper `setup` uses,
+capped at a few seconds so a stuck binary cannot hang the command. It is omitted, not guessed
+at, when `kronk` is not on `PATH` or does not answer in time — this has to work with **no server
+running**, which is the ordinary case for asking a program what it is.
+
+The startup banner adds a third line when a newer `kronk-cli` exists:
+
+```console
+  ██ kronk-cli  · local agent, no network
+  model   unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT
+  server  http://localhost:11435/v1
+  update  kronk-cli 0.7.0 → 0.8.1 · run: brew upgrade kronk-cli
+  /help for commands · Ctrl-C to interrupt · /exit to quit
+```
+
+**It asks the package manager, never the network directly.** No `fetch`, no URL literal — the
+version comes from whatever tool installed this copy, detected from the path `src/index.js`
+itself resolved to:
+
+| Route | How it's detected | What answers |
+|---|---|---|
+| Homebrew | a `Cellar/kronk-cli/` path | `brew outdated --json` |
+| npm global install | a `node_modules/kronk-cli` path | `npm view kronk-cli version` |
+| git checkout | a `.git` above the file | `git fetch --tags` + the newest tag |
+| `packaging/install.sh` | a `lib/kronk-cli` path | nothing — see below |
+
+The hint always matches the route: a Homebrew install is told `brew upgrade kronk-cli`, an npm
+one `npm install -g kronk-cli@latest`, a checkout `git pull`. Suggesting the wrong one would send
+someone to a manager that has never heard of this copy, which is worse than saying nothing.
+
+The git checkout route is the one that makes a real network call, through `git fetch --tags`
+rather than any request this program issues itself, and it honours the same off-switch as
+everything else here.
+
+**The install script has nothing to ask.** It unpacks a tarball into `$PREFIX/lib/kronk-cli` and,
+unlike the other three routes, there is no registry behind it that knows the latest release. It
+writes a small receipt (`$PREFIX/lib/kronk-cli/.install-receipt.json`, version and source) at
+install time so this route is not silent forever; when that receipt is present the banner shows
+a plain nudge —  `update  kronk-cli 0.7.0 · re-run the install script` — with no version
+comparison, because there is genuinely nothing to compare against. A copy installed before the
+receipt existed, or one someone assembled by hand, shows no update line at all, which is the
+honest answer for a route with no manager behind it.
+
+**Never on the path that slows startup down.** The check result is cached to disk with a
+timestamp and reused for up to a day; a stale or missing cache still renders instantly (from
+whatever was cached last, or nothing) while a fresh check for the *next* session runs
+unawaited in the background. Nothing about this can delay, block, or fail the REPL — a package
+manager that hangs, errors, or prints garbage simply produces no line.
+
+`KRONK_UPDATE_CHECK=false` (or `"updateCheck": false` in the config file) turns all of this off:
+no cache read, no subprocess, ever.
+
+---
+
 ## Performance
 
 The transcripts above are real sessions, kept to show what the UI looks like — not a benchmark
@@ -598,6 +662,7 @@ same way this run did.
 | `--no-subagents` | off | Remove the `task` tool, so the model cannot delegate — see [Sub-agents](#sub-agents) |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
 | `-h`, `--help` | — | Print all options and exit |
+| `-v`, `--version` | — | Print the kronk-cli version, and Kronk's if it can be had without a network call, then exit |
 | `--` | — | End option parsing; everything after it is prompt text, dashes and all |
 
 Anything not consumed as an option becomes the prompt, except a token that looks like an
@@ -721,6 +786,7 @@ Two consequences worth knowing:
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
 | `KRONK_THEME` | `auto` | `dark` or `light` pins the palette; `auto` reads the terminal's background |
+| `KRONK_UPDATE_CHECK` | `true` | `false` never asks the package manager whether a newer kronk-cli exists — no subprocess, ever |
 | `NO_COLOR` | — | Any value disables colour |
 | `FORCE_COLOR` | — | `0` disables colour; any other value keeps it on through a pipe |
 

@@ -354,7 +354,14 @@ test('--version prints the real version and exits 0 with no server running', asy
     NO_COLOR: '1',
   };
   const { stdout } = await run(process.execPath, [CLI, '--version'], { env, timeout: 15_000 });
-  assert.match(stdout, new RegExp(`^kronk-cli ${pkg.version.replace(/\./g, '\\.')}$`, 'm'));
+  // Compared as a whole line rather than through a regex built from the
+  // version string. Hand-escaping a value into a pattern is the wrong shape
+  // even when the value is our own semver: it reads as sanitisation, it is
+  // incomplete as sanitisation, and there is nothing here a plain string
+  // comparison cannot say.
+  const lines = stdout.split('\n').map((l) => l.trim());
+  assert.ok(lines.includes(`kronk-cli ${pkg.version}`),
+    `expected a "kronk-cli ${pkg.version}" line, got: ${JSON.stringify(stdout)}`);
 });
 
 /** A minimal Kronk stub: just enough for boot() and the banner to print. */

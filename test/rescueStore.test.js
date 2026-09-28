@@ -11,7 +11,11 @@ import {
 } from '../src/rescueStore.js';
 
 // Never the real temp dir: this suite creates, ages and sweeps whole trees.
-config.rescueDir = mkdtempSync(join(tmpdir(), 'kronk-rescue-'));
+// Held in a local as well as on `config` so the few places below that write
+// directly build their path from `mkdtempSync`'s own result — a private 0700
+// directory — rather than reaching back out through module state for it.
+const STORE = mkdtempSync(join(tmpdir(), 'kronk-rescue-'));
+config.rescueDir = STORE;
 config.taskLogDir = mkdtempSync(join(tmpdir(), 'kronk-tasklog-for-rescue-'));
 config.taskLog = true;
 
@@ -19,7 +23,7 @@ const make = (over = {}) => createJob({ role: 'explore', prompt: 'p', ...over })
 
 /** Rewrite one field directly on disk — for ages `collect()` itself never produces. */
 function patch(id, fields) {
-  const path = join(ROOT(), `${id}.json`);
+  const path = join(STORE, `${id}.json`);
   const record = JSON.parse(readFileSync(path, 'utf8'));
   Object.assign(record, fields);
   writeFileSync(path, JSON.stringify(record));
@@ -198,7 +202,7 @@ test('a lock whose holder process is gone does not wedge the queue forever', () 
   const stuck = make();
   markRunning(stuck.id, { pid: 1, model: 'm' });
   // A pid nothing on this machine is using — the crash-without-cleanup case.
-  writeFileSync(join(ROOT(), 'lock.json'), JSON.stringify({ pid: 2147483647, id: stuck.id }));
+  writeFileSync(join(STORE, 'lock.json'), JSON.stringify({ pid: 2147483647, id: stuck.id }));
 
   const next = make();
   assert.equal(acquireLock(next.id), true, 'the stale lock must not block a live claimant');
@@ -215,7 +219,7 @@ test('a lock file too broken to read is stale, not a reason to spin', () => {
   // In a detached worker that is one core pinned for as long as the machine is
   // up, with every job after it queued behind a holder that never existed.
   for (const broken of ['', 'not json at all', '{"pid":']) {
-    writeFileSync(join(ROOT(), 'lock.json'), broken);
+    writeFileSync(join(STORE, 'lock.json'), broken);
     const job = make();
     assert.equal(acquireLock(job.id), true,
       `a lock containing ${JSON.stringify(broken)} must not block a live claimant`);
@@ -226,7 +230,7 @@ test('a lock file too broken to read is stale, not a reason to spin', () => {
 test('a lock genuinely held by a live process is respected, not stolen', () => {
   const holder = make();
   // Our own pid is unquestionably alive — stands in for "someone else's run".
-  writeFileSync(join(ROOT(), 'lock.json'), JSON.stringify({ pid: process.pid, id: holder.id }));
+  writeFileSync(join(STORE, 'lock.json'), JSON.stringify({ pid: process.pid, id: holder.id }));
   const waiting = make();
   assert.equal(acquireLock(waiting.id), false);
   releaseLock(holder.id);

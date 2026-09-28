@@ -26,7 +26,28 @@ import { config } from './config.js';
 
 export const ROOT = () => config.rescueDir ?? join(tmpdir(), 'kronk-cli-rescue');
 const LOCK = () => join(ROOT(), 'lock.json');
-const file = (id) => join(ROOT(), `${id}.json`);
+
+/**
+ * Exactly the shape `newId()` produces, and the only shape a job id may have.
+ *
+ * A job id arrives from outside — `rescue status <id>` takes whatever was
+ * typed — and it is used to build a path. Without this it is used to build
+ * *any* path: `rescue result ../../something --json` would read that file and
+ * print it, and `collect()` would then write the record back over it, both
+ * outside the store entirely. That is a local CLI reading files its own
+ * operator can already read, so the ceiling on it is low — but a path built
+ * from unvalidated input is worth closing on its own terms, and the honest
+ * answer to an id that cannot exist is the one the callers already handle:
+ * there is no such job.
+ */
+const ID = /^[0-9a-z]+-[0-9a-z]+-[0-9a-f]{6}$/;
+
+export const isJobId = (id) => typeof id === 'string' && ID.test(id);
+
+const file = (id) => {
+  if (!isJobId(id)) throw new Error(`not a job id: ${id}`);
+  return join(ROOT(), `${id}.json`);
+};
 
 /**
  * Kept until collected, then aged out — the lifetime the issue asks for.
@@ -86,8 +107,13 @@ export function createJob({ role, prompt, model = null, yes = false, auto = fals
   });
 }
 
-/** One job in full, or null — a bad id and a swept-away id look the same, deliberately. */
+/**
+ * One job in full, or null. An id that is not a job id at all, one no file was
+ * ever written for, and one already swept away all look the same from here —
+ * deliberately: every caller's answer to all three is "there is no such job".
+ */
 export function readJob(id) {
+  if (!isJobId(id)) return null;
   try { return JSON.parse(readFileSync(file(id), 'utf8')); }
   catch { return null; }
 }

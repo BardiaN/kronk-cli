@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { config } from '../src/config.js';
 import { parseRescueCommand, runRescue, EXIT_CODES } from '../src/rescue.js';
-import { readJob, ROOT } from '../src/rescueStore.js';
+import { readJob, createJob, isJobId, ROOT } from '../src/rescueStore.js';
 import { startStub } from './fixtures/kronk-stub.js';
 
 // Never the real temp dir, and never the real config file's model.
@@ -188,6 +188,24 @@ test('result on a job that has not finished yet refuses rather than printing not
 });
 
 // ---- exit codes --------------------------------------------------------------
+
+test('a job id that could escape the store is not a job id at all', async () => {
+  // `rescue result ../x --json` used to read that file and print it, and the
+  // collect() that follows would write the record back over it — both outside
+  // the store. The ceiling was low (a local CLI, an operator reading their own
+  // files) but a path built from unvalidated input closes on its own terms.
+  for (const bad of ['../secret', '../../etc/passwd', 'a/b', '', '.', 'nope']) {
+    assert.equal(readJob(bad), null, `${JSON.stringify(bad)} must not resolve to a record`);
+    assert.equal(isJobId(bad), false);
+  }
+
+  // And a real one still works, so the guard is not simply refusing everything.
+  const store = mkdtempSync(join(tmpdir(), 'kronk-rescue-id-'));
+  config.rescueDir = store;
+  const job = createJob({ role: 'explore', prompt: 'p' });
+  assert.equal(isJobId(job.id), true, `newId() must produce an id its own guard accepts: ${job.id}`);
+  assert.equal(readJob(job.id).id, job.id);
+});
 
 test('EXIT_CODES names exactly the four terminal states', () => {
   assert.deepEqual(EXIT_CODES, { done: 0, stopped: 1, interrupted: 2, failed: 3 });

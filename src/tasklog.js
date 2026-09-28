@@ -203,6 +203,11 @@ const gist = (prompt, width) => {
  * never finished says so rather than reporting a duration it does not have:
  * "still running" and "died three steps in" are the two states where the
  * transcript is worth the most, and both would otherwise render as a blank.
+ *
+ * The model is named on every line, not only the ones that used a different
+ * one: a task can now pick its own (src/subagent.js), and a run that took a
+ * minute longer than the others is otherwise a mystery — this is the list
+ * where that gets explained, without opening the run in full.
  */
 export function runLines() {
   if (!config.taskLog) {
@@ -216,7 +221,8 @@ export function runLines() {
     const how = { done: took(r.ms), stopped: 'stopped', running: 'running' }[r.state] ?? took(r.ms);
     const state = `${r.steps} step${r.steps === 1 ? '' : 's'} \u00b7 ${how}`.padEnd(20);
     const dot = { done: c.green('\u25cf'), stopped: c.yellow('\u25cf'), running: c.blue('\u25cf') }[r.state] ?? c.grey('\u25cf');
-    return `  ${dot} ${c.bold(String(r.n).padStart(2))}  ${r.agent.padEnd(7)} ${c.grey(state)} ${c.grey(gist(r.prompt, 44))}`;
+    const model = r.model ? `${r.model.split('/').slice(-2).join('/')} \u00b7 ` : '';
+    return `  ${dot} ${c.bold(String(r.n).padStart(2))}  ${r.agent.padEnd(7)} ${c.grey(state)} ${c.grey(model)}${c.grey(gist(r.prompt, 40))}`;
   });
   lines.push(c.grey(`\n  /tasks <n> for one in full \u00b7 ${sessionDir()}`));
   return lines;

@@ -150,11 +150,19 @@ const OFF = {
  * to itself rather than competing with a redraw every 250 ms.
  */
 export function livePane({
-  agent = 'agent', maxSteps, rows: keep = BODY_ROWS, signal,
+  agent = 'agent', model, maxSteps, rows: keep = BODY_ROWS, signal,
   stream = process.stdout, input = process.stdin, env = process.env,
   now = Date.now, tickMs = 250,
 } = {}) {
   if (!paneUsable(stream, env)) return OFF;
+
+  // The label carries the model too, the same way the opening line above a
+  // pipe does (src/subagent.js's `openLine`) — a task on a model that had to
+  // be loaded cold is exactly the run a person watches the box wondering why
+  // it is slow, and the header is where that question gets answered. The last
+  // two path segments, not one: a served id's last segment alone (`AGENT`,
+  // `base`) is shared by every profile of every model and says nothing.
+  const label = model ? `${agent} · ${String(model).split('/').slice(-2).join('/')}` : agent;
 
   const started = now();
   const fed = [];
@@ -174,7 +182,7 @@ export function livePane({
     if (collapsed) return;
     const width = paneWidth(stream.columns);
     const hint = c.grey(unwatch ? 'esc to collapse · ctrl-c to stop' : 'ctrl-c to stop');
-    const frame = renderPane({ agent, rows: fed, status: status(), hint, width });
+    const frame = renderPane({ agent: label, rows: fed, status: status(), hint, width });
     // Up to the top of the old box, then repaint row by row. `\x1b[K` on each
     // row so a shorter line does not leave the tail of a longer one behind.
     let buf = height ? `\r\x1b[${height}A` : '';

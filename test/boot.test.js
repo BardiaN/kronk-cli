@@ -375,3 +375,52 @@ test('every request of a tool loop carries it, not only the first', async (t) =>
     'the later requests really are follow-ups, not repeats of the first');
   t.diagnostic(`tool-loop requests: ${turns.length}`);
 });
+
+// ---- a delegated task naming its own model (issue #84) -----------------
+//
+// Everything else in this file drives one model end to end; this is the one
+// behaviour that only exists once boot() has wired the served list into the
+// task tool's enum, the model has dispatched a `task` call naming one of
+// those ids, and src/subagent.js has resolved and requested it for real —
+// no unit test can see all three links at once. Skips rather than fails if
+// nothing is actually reachable, the same convention CONTRIBUTING.md
+// describes for "starts and fails cleanly with no server running": this
+// suite already runs entirely against a local HTTP stub, never a real
+// Kronk, so the guard is `startStub` itself refusing to listen rather than
+// a live-server check — see the try/catch below.
+
+test('the model definition the CLI offers names every served model, and a task can pick one', async (t) => {
+  let stub;
+  try {
+    stub = await startStub({
+      ids: [DEFAULT_MODEL, OTHER],
+      turns: [
+        { tool: ['task', { agent: 'explore', prompt: 'find the SSE parser', model: 'Other-Q4' }] },
+        { text: 'STATUS: found it in src/sse.js:12' },
+        { text: 'STUB_OK' },
+      ],
+    });
+  } catch (e) {
+    t.skip(`no local port available for the stub: ${e.message}`);
+    return;
+  }
+  const out = await cli(stub, ['find the parser and report back']);
+  stub.close();
+
+  assert.match(out.stdout, /STUB_OK/, 'the main turn still finished');
+
+  // The tool definition offered on the first real turn (the warm-up ahead of
+  // it carries no tools at all) already names both served ids — this is
+  // `setServedModels(chatModels(ids))` in boot(), reaching the wire.
+  const [firstTurn] = stub.chat.filter((b) => b.stream);
+  const offered = firstTurn.tools.find((tl) => tl.function.name === 'task');
+  assert.deepEqual(offered.function.parameters.properties.model.enum, [DEFAULT_MODEL, OTHER]);
+  assert.ok(!offered.function.parameters.required.includes('model'), 'model stays optional');
+
+  // And the delegated completion really did go out for the model the task
+  // asked for, resolved from a substring against what boot() learned Kronk
+  // was serving — not the session's own model.
+  const models = stub.chat.filter((b) => b.stream).map((b) => b.model);
+  assert.ok(models.includes(OTHER), `expected a request for ${OTHER}, saw ${JSON.stringify(models)}`);
+  assert.ok(models.includes(DEFAULT_MODEL), 'the main turn itself still ran on the session model');
+});

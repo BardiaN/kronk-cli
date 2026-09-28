@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { config } from '../src/config.js';
 import {
   AGENTS, TASK_TOOL, taskTools, subagentTools, systemFor, runTask,
+  setServedModels, resetLimitsCache,
 } from '../src/subagent.js';
 import { listRuns, readRun } from '../src/tasklog.js';
 
@@ -25,13 +26,52 @@ function stubRun(reply = 'the report') {
   return { run, calls };
 }
 
+/**
+ * A stand-in for src/client.js's `modelLimits`, so a test that exercises a
+ * named model's own limits never opens a real socket — see the comment on
+ * `runTask`'s `modelLimits` option for why that matters even when the call
+ * would fail harmlessly: nothing here may depend on what, if anything, is
+ * listening on the real Kronk port on the machine the suite runs on.
+ */
+function fakeLimits(byId) {
+  const calls = [];
+  const fetchLimits = async (id) => { calls.push(id); return byId[id] ?? {}; };
+  return { fetchLimits, calls };
+}
+
 const names = (tools) => tools.map((t) => t.function.name);
+
+// Neither of these is allowed to leak from one test into the next: a test
+// earlier in the file setting the served list or warming the limits cache
+// must not change what a later, unrelated test sees.
+function resetSubagentState() {
+  setServedModels(null);
+  resetLimitsCache();
+  config.subagentModel = null;
+}
 
 test('the task tool exists only at the top level', () => {
   config.subagents = true;
   assert.deepEqual(names(taskTools(0)), ['task']);
   assert.deepEqual(taskTools(1), [], 'a sub-agent cannot be handed the tool that spawns one');
   assert.deepEqual(taskTools(2), []);
+});
+
+test('the served list changing rebuilds the task tool definition, not just its enum in place', () => {
+  // src/agent.js used to know a `task` call by identity — `tools.includes(TASK_TOOL)`.
+  // That broke the moment the definition could be rebuilt mid-session (setServedModels
+  // from /model, or here), because a `tools` array captured before the rebuild would
+  // hold a reference this module has since replaced. src/agent.js now matches by
+  // `function.name` instead; this proves the reference really does change, which is
+  // exactly what would have made the old check silently stop recognising delegation.
+  setServedModels(['a']);
+  const first = taskTools(0)[0];
+  setServedModels(['a', 'b']);
+  const second = taskTools(0)[0];
+  assert.notEqual(first, second, 'a reference captured before the change is stale afterwards');
+  assert.equal(first.function.name, 'task');
+  assert.equal(second.function.name, 'task');
+  resetSubagentState();
 });
 
 test('delegation can be turned off entirely', () => {
@@ -44,6 +84,22 @@ test('the task tool names every agent it will accept', () => {
   const { parameters } = TASK_TOOL.function;
   assert.deepEqual(parameters.properties.agent.enum, Object.keys(AGENTS));
   assert.deepEqual(parameters.required, ['agent', 'prompt']);
+});
+
+test('with nothing served yet, the task tool offers no model parameter at all', () => {
+  assert.equal(TASK_TOOL.function.parameters.properties.model, undefined,
+    'an enum with no members is not a real choice');
+});
+
+test('the model enum is exactly the served list it was given, and model stays optional', () => {
+  const served = ['unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT', 'stub/small/AGENT'];
+  setServedModels(served);
+  const { parameters } = TASK_TOOL.function;
+  assert.deepEqual(parameters.properties.model.enum, served);
+  assert.deepEqual(parameters.required, ['agent', 'prompt'], 'model is never required');
+  resetSubagentState();
+  assert.equal(TASK_TOOL.function.parameters.properties.model, undefined,
+    'clearing the served list puts the tool back to its starting shape');
 });
 
 test('explore cannot touch anything', () => {
@@ -124,13 +180,74 @@ test('approval is the caller’s, not the sub-agent’s', async () => {
 
 test('sub-agents can run on their own model', async () => {
   const { run, calls } = stubRun();
+  const { fetchLimits } = fakeLimits({});
+  config.subagentModel = 'small-model';
+  await runTask({ agent: 'explore', prompt: 'look' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
+  assert.equal(calls[0].model, 'small-model');
+
+  config.subagentModel = null;
+  await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
+  assert.equal(calls[1].model, 'main-model');
+  resetSubagentState();
+});
+
+test('a task naming a model runs on it, overriding config.subagentModel', async () => {
+  const { run, calls } = stubRun();
+  config.subagentModel = 'small-model';
+  await runTask({ agent: 'explore', prompt: 'look', model: 'big-model' },
+    { run, model: 'main-model', out: quiet });
+  assert.equal(calls[0].model, 'big-model', "the task's own choice wins over the session default");
+  resetSubagentState();
+});
+
+test('a task naming nothing falls back to config.subagentModel, then to the main model', async () => {
+  const { run, calls } = stubRun();
   config.subagentModel = 'small-model';
   await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
   assert.equal(calls[0].model, 'small-model');
 
   config.subagentModel = null;
   await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
-  assert.equal(calls[1].model, 'main-model');
+  assert.equal(calls[1].model, 'main-model', 'nothing configured at all — the session’s own model');
+  resetSubagentState();
+});
+
+test('a named model is trusted as-is when nothing has ever told runTask what is served', async () => {
+  // No `setServedModels` anywhere in this file up to here — every other test
+  // in this suite builds `runTask` exactly this way, by hand, and none of
+  // them boots. A named model must still work in that shape, the same as
+  // `model` and `config.subagentModel` already do without validation.
+  const { run, calls } = stubRun();
+  await runTask({ agent: 'explore', prompt: 'look', model: 'anything-at-all' },
+    { run, model: 'main-model', out: quiet });
+  assert.equal(calls[0].model, 'anything-at-all');
+});
+
+test('once the served list is known, a task can only land on something in it', async () => {
+  setServedModels(['big/model/AGENT', 'small/model/AGENT']);
+  const { run, calls } = stubRun();
+  await runTask({ agent: 'explore', prompt: 'look', model: 'small/model' },
+    { run, model: 'main-model', out: quiet });
+  assert.equal(calls[0].model, 'small/model/AGENT', 'substring resolved against the served list, /AGENT preferred');
+  resetSubagentState();
+});
+
+test('a named model that is not served falls back to the default, with a note, rather than failing the task', async () => {
+  setServedModels(['big/model/AGENT']);
+  const { run, calls } = stubRun('found it');
+  const lines = [];
+  const out = await runTask({ agent: 'explore', prompt: 'look', model: 'nonexistent/model' },
+    { run, model: 'main-model', out: (l) => lines.push(l) });
+
+  // The task still ran, on the fallback, not the error path used for an
+  // unknown agent — there is nothing the delegating model could have done
+  // differently, since the name came straight from the enum it was offered.
+  assert.equal(calls[0].model, 'main-model');
+  assert.match(out, /^note: "nonexistent\/model" is not being served/, 'the caller is told, in the tool result it reads');
+  assert.match(out, /found it/, 'and still gets the report');
+  assert.ok(lines.some((l) => /not being served/.test(l)), 'and so is anyone watching the screen');
+  resetSubagentState();
 });
 
 test('a sub-agent that reports nothing says so', async () => {
@@ -151,22 +268,56 @@ test('the report is printed, bounded, and handed back whole', async () => {
   assert.ok(lines.some((l) => l.includes('more lines')), 'and says how many it hid');
 });
 
-test('a sub-agent on another model gets that model’s window, not the session’s', async () => {
+test('the named model’s own window and output cap reach run, not the session’s', async () => {
   const { run, calls } = stubRun();
   config.contextWindow = 131072;
   config.maxTokens = 16384;
-  config.subagentModel = 'small-model';
-  config.subagentLimits = { configured: 32768, contextWindow: 32768, maxTokens: 4096 };
-  await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
+  const { fetchLimits } = fakeLimits({
+    'small-model': { configured: 32768, maxTokens: 4096 },
+  });
+  await runTask({ agent: 'explore', prompt: 'look', model: 'small-model' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
   assert.equal(calls[0].window, 32768, 'compacting a 32k sub-agent at 85% of 131k never fires');
   assert.equal(calls[0].maxTokens, 4096);
 
-  // No sub-agent model: it is the session's model, so the session's limits.
-  config.subagentModel = null;
-  config.subagentLimits = null;
-  await runTask({ agent: 'explore', prompt: 'look' }, { run, model: 'main-model', out: quiet });
+  // No named model, and no config.subagentModel: it is the session's own
+  // model, so no lookup happens at all — the session's limits are used
+  // directly, exactly as before this feature existed.
+  await runTask({ agent: 'explore', prompt: 'look' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
   assert.equal(calls[1].window, 131072);
   assert.equal(calls[1].maxTokens, 16384);
+  resetSubagentState();
+});
+
+test('modelLimits is asked once per distinct model, however many tasks run on it', async () => {
+  const { fetchLimits, calls: fetched } = fakeLimits({
+    'model-a': { configured: 8192, maxTokens: 2048 },
+    'model-b': { configured: 16384, maxTokens: 2048 },
+  });
+  const { run } = stubRun();
+  await runTask({ agent: 'explore', prompt: 'one', model: 'model-a' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
+  await runTask({ agent: 'explore', prompt: 'two', model: 'model-a' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
+  await runTask({ agent: 'explore', prompt: 'three', model: 'model-b' },
+    { run, model: 'main-model', out: quiet, modelLimits: fetchLimits });
+
+  assert.deepEqual(fetched, ['model-a', 'model-b'], 'the second run on model-a used the cache');
+  resetSubagentState();
+});
+
+test('the model that actually ran is on the opening line and in the run record', async () => {
+  const { run } = stubRun('found it');
+  const lines = [];
+  await runTask({ agent: 'explore', prompt: 'look', model: 'unsloth/big-one/AGENT' },
+    { run, model: 'main-model', out: (l) => lines.push(l) });
+
+  assert.match(lines[0], /big-one\/AGENT/,
+    'residency is the real cost of picking a model — this is where it is paid, and named');
+  const saved = listRuns().at(-1);
+  assert.equal(saved.model, 'unsloth/big-one/AGENT',
+    '/tasks can only explain a slow run afterwards if the record says which model it was on');
 });
 
 test('a run is framed on screen: which agent, and what it cost', async () => {
@@ -265,6 +416,18 @@ function fakePane() {
   };
   return p;
 }
+
+test('the pane is told which model the run is on, so its header can name it', async () => {
+  const { run } = stubRun('done');
+  const seen = [];
+  const pane = fakePane();
+  await runTask({ agent: 'explore', prompt: 'look', model: 'unsloth/big-one/AGENT' }, {
+    run, model: 'main-model', out: quiet,
+    pane: (opts) => { seen.push(opts); return pane; },
+  });
+  assert.equal(seen[0].model, 'unsloth/big-one/AGENT',
+    'src/pane.js renders this into the box header — see livePane’s label');
+});
 
 test('on a terminal the run goes into the pane, not into the conversation', async () => {
   const { run, calls } = stubRun('it is at src/sse.js:12');

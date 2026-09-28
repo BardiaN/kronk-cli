@@ -680,7 +680,7 @@ Two consequences worth knowing:
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |
 | `/think` | turn reasoning off entirely — much faster |
-| `/agents` | the sub-agents `task` can delegate to, and what each may touch |
+| `/agents` | the sub-agents `task` can delegate to, what each may touch, and the default model |
 | `/tasks [n]` | sub-agent runs this session; with `n`, that one in full |
 | `/mcp` | list attached MCP servers and their tools |
 | `/context` | how much of the context window is used |
@@ -713,7 +713,7 @@ Two consequences worth knowing:
 | `KRONK_DISTILL` | `true` | `false` disables tool-output distillation |
 | `KRONK_DISTILL_AT` | `8000` | Characters of output that trigger distillation |
 | `KRONK_SUBAGENTS` | `true` | `false` removes the `task` tool |
-| `KRONK_SUBAGENT_MODEL` | the main model | Model sub-agents run on — substring match, same as `KRONK_MODEL` |
+| `KRONK_SUBAGENT_MODEL` | the main model | Default model for a task that names none itself — substring match, same as `KRONK_MODEL`. A task can pick its own from what Kronk is serving, see [Picking a model per task](#picking-a-model-per-task) |
 | `KRONK_SUBAGENT_STEPS` | `40` | Tool-call cap for one delegated task |
 | `KRONK_TASK_LOG` | `true` | `false` stops writing sub-agent transcripts, and `/tasks` says so |
 | `KRONK_TASK_LOG_DIR` | the temp dir | Where transcripts are written |
@@ -908,9 +908,10 @@ Kronk reports the **effective** window for whichever model id you selected — t
 Every limit is read from the selected model's profile, and re-read when the selection changes:
 the window, the output cap (`sampling-parameters.max_tokens`), whether the chat template
 understands `preserve_thinking`, and the model's native maximum. `/model` mid-session moves all
-of them, and a sub-agent running on `KRONK_SUBAGENT_MODEL` compacts against *its* window rather
-than the main model's. The one number that is not taken from the profile is a `KRONK_MAX_TOKENS`
-you set yourself — yours always wins.
+of them, and a sub-agent — whether it is running on `KRONK_SUBAGENT_MODEL` or on a model a task
+named for itself, see [Picking a model per task](#picking-a-model-per-task) — compacts against
+*its own* window rather than the main model's. The one number that is not taken from the profile
+is a `KRONK_MAX_TOKENS` you set yourself — yours always wins.
 
 Three places surface it:
 
@@ -1424,6 +1425,38 @@ the delegation *and* the work.
 > A small model will not delegate unprompted as often as a frontier one does. Asking for it
 > works — *"use a sub-agent to survey the test suite first"* — and is usually how you will
 > drive this.
+
+### Picking a model per task
+
+`KRONK_SUBAGENT_MODEL` is a session-wide setting — every delegated task ran on it, or on the main
+model, and changing your mind meant leaving the session. But which model suits a task is a
+property of the *task*, not of the session: a survey that reads thirty files and answers one
+question wants the small fast model; reproducing a build failure and fixing it wants the big one.
+
+So the `task` tool takes an optional `model`, and the delegating model picks it from what Kronk is
+actually serving — every chat model it has, with a bare id dropped when its own `/AGENT` profile
+is served beside it, offered as a fixed list rather than free
+text, so it can never ask for a model that does not exist. Leaving it out is unchanged:
+`KRONK_SUBAGENT_MODEL` if one is set, otherwise the main model.
+
+```console
+  1 ⚙ task explore: survey every call site of parseLimits · Qwen3.6-4B/AGENT
+  ┌─ explore · Qwen3.6-4B/AGENT ──────────────────────────────── 3/40 · 9s ─┐
+```
+
+The model actually used is named on the opening line and in the box, because naming one that is
+not already resident is not free. Kronk holds one large model at a time, so a task that asks for
+a different one pays a real cold load — the same 10–30s spinner `kronk-cli` itself waits through
+at startup — and may evict the model the rest of the session is running on. `/tasks` records which
+model each run was on, so a delegation that took a minute longer than the others is explained by
+the list, not a mystery.
+
+A task's own model gets *its* window and output cap, not the session's, read from that model's own
+limits the first time anything runs on it and kept for the rest of the session — the same
+argument [Context window](#context-window) already makes for `KRONK_SUBAGENT_MODEL`: a 32k
+sub-agent must not compact against the main model's 131k window. A model named that Kronk turns
+out not to be serving any more — unloaded mid-session, say — is not a failed delegation: the task
+still runs, on the same fallback as no `model` at all, with a note saying so in its report.
 
 ## Autonomous mode
 

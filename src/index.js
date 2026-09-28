@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
-import { pickDefault, ensureLoaded } from './boot.js';
+import { pickDefault, chatModels, ensureLoaded } from './boot.js';
+import { resolveModel } from './resolve.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
@@ -15,7 +16,7 @@ import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
 import { deferredPrompt } from './prompt.js';
-import { AGENTS } from './subagent.js';
+import { AGENTS, setServedModels } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
 import { runSetup } from './setup.js';
 
@@ -77,7 +78,9 @@ if (args.help) {
     KRONK_COMPACT_AT    fraction of the window that triggers it (default 0.85)
     KRONK_SUBAGENTS     false to remove the task tool
     KRONK_SUBAGENT_MODEL
-                        model sub-agents run on (default: the main model)
+                        default model for a task that names none itself
+                        (default: the main model) — a task can pick its own
+                        from what Kronk is serving, see /agents
     KRONK_SUBAGENT_STEPS
                         tool-call cap for one delegated task (default 40)
 
@@ -124,15 +127,12 @@ async function boot() {
   // Fall back to the configured default before guessing.
   if (!config.model && ids.includes(DEFAULT_MODEL)) config.model = DEFAULT_MODEL;
 
+  // Exact id wins. Otherwise take a substring match, preferring an /AGENT
+  // profile — each profile is a SEPARATE resident copy in the pool, so
+  // picking the wrong one silently loads a second 20 GB instance. One
+  // resolver (src/resolve.js) for this and for the identical problem below.
   if (config.model) {
-    // exact id wins; otherwise accept a unique-enough substring
-    // Exact id wins. Otherwise take a substring match, preferring an /AGENT
-    // profile — each profile is a SEPARATE resident copy in the pool, so
-    // picking the wrong one silently loads a second 20 GB instance.
-    const subs = ids.filter((id) => id.includes(config.model));
-    const hit = ids.find((id) => id === config.model)
-             ?? subs.find((id) => id.endsWith('/AGENT'))
-             ?? subs[0];
+    const hit = resolveModel(config.model, ids);
     if (hit) config.model = hit;
     else {
       console.error(c.yellow(`  no model matching "${config.model}" — falling back`));
@@ -145,10 +145,7 @@ async function boot() {
   // model: a substring in the config file that matches nothing would otherwise
   // only surface as a 404 in the middle of somebody's first delegated task.
   if (config.subagentModel) {
-    const subs = ids.filter((id) => id.includes(config.subagentModel));
-    const hit = ids.find((id) => id === config.subagentModel)
-             ?? subs.find((id) => id.endsWith('/AGENT'))
-             ?? subs[0];
+    const hit = resolveModel(config.subagentModel, ids);
     if (hit) config.subagentModel = hit;
     else {
       console.error(c.yellow(`  no model matching "${config.subagentModel}" for sub-agents`
@@ -157,6 +154,14 @@ async function boot() {
     }
   }
 
+  // What a delegated task's own `model` argument may name — see the `task`
+  // tool in src/subagent.js. `chatModels` is a wider list than the one
+  // `pickDefault` above chose the session's model from, and deliberately so:
+  // picking one default prefers a tuned /AGENT profile outright, while
+  // offering a menu must keep the models that have no profile, because the
+  // small fast one a survey should be sent to is usually one of them.
+  setServedModels(chatModels(ids));
+
   if (config.warm) await ensureLoaded(ids);
 
   // After `ensureLoaded`, which may have fallen back to a different model
@@ -164,11 +169,10 @@ async function boot() {
   // describe a model this session is not using.
   applyLimits(await modelLimits(config.model));
 
-  // The sub-agent model's profile is its own. Resolved once here rather than
-  // on the first delegation, where the wait would land mid-task.
-  config.subagentLimits = config.subagentModel
-    ? await modelLimits(config.subagentModel)
-    : null;
+  // The sub-agent model's own profile is no longer resolved here: a task can
+  // run on any served model now, not only the one configured for delegation,
+  // so src/subagent.js resolves and caches each one's limits the first time a
+  // task actually runs on it — see `limitsFor` there.
   return ids;
 }
 
@@ -580,8 +584,9 @@ async function main() {
         console.log(`  ${c.green('●')} ${c.bold(name)} ${c.grey(`· ${a.tools.join(', ')}`)}`);
         console.log(c.grey(`      for ${a.use}`));
       }
-      console.log(c.grey(`  model: ${config.subagentModel ?? config.model} · `
-        + `cap ${config.subagentSteps} steps per task\n`));
+      console.log(c.grey(`  default model: ${config.subagentModel ?? config.model} · `
+        + `cap ${config.subagentSteps} steps per task`));
+      console.log(c.grey('  a task can name a different served model itself, when the default is the wrong size for it\n'));
       continue;
     }
     if (input === '/theme' || input.startsWith('/theme ')) {
@@ -635,12 +640,13 @@ async function main() {
     if (input.startsWith('/model ')) {
       const want = input.slice(7).trim();
       const all = await listModels();
-      const subs = all.filter((m) => m.includes(want));
-      const hit = all.find((m) => m === want)
-               ?? subs.find((m) => m.endsWith('/AGENT'))
-               ?? subs[0];
+      const hit = resolveModel(want, all);
       if (!hit) { console.log(c.red(`  no model matching "${want}"`)); continue; }
       await switchModel(hit);
+      // Kronk may be serving something new since boot — a model pulled or
+      // unloaded mid-session — so a task's own `model` enum is refreshed from
+      // the same list this command just asked for, not left stale from boot.
+      setServedModels(chatModels(all));
       console.log(c.green(`  switched to ${hit}`));
       console.log(c.grey(`  window ${config.contextWindow?.toLocaleString() ?? 'unknown'}`
         + ` · output cap ${config.maxTokens.toLocaleString()}`

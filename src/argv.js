@@ -18,6 +18,7 @@
  */
 const SPECS = [
   { names: ['-h', '--help'], kind: 'flag', key: 'help' },
+  { names: ['-v', '--version'], kind: 'flag', key: 'version' },
   { names: ['-l', '--models', '--list'], kind: 'flag', key: 'models' },
   { names: ['--mcp-list'], kind: 'flag', key: 'mcpList' },
   { names: ['--no-context'], kind: 'flag', key: 'noContext' },
@@ -101,7 +102,7 @@ const unknown = (token) => {
 export function parseArgv(argv) {
   const out = {
     error: null,
-    help: false, models: false, mcpList: false,
+    help: false, version: false, models: false, mcpList: false,
     noContext: false, noCompact: false, noWarm: false, noThink: false,
     noSubagents: false,
     auto: false, yes: false, dryRun: false,

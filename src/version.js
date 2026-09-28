@@ -18,11 +18,18 @@ export const VERSION = pkg.version;
 /**
  * `kronk version 1.32.7\n` -> `1.32.7`. `runKronk(['--version'])` is the one
  * door this program uses to ask the `kronk` binary anything, and this is the
- * one place that makes sense of what comes back. Falls back to the trimmed
- * whole line rather than null, on the theory that an unexpected format is
- * still more informative on screen than nothing.
+ * one place that makes sense of what comes back. Falls back to the first line
+ * rather than to null, on the theory that an unexpected format is still more
+ * informative on screen than nothing — but only the first line, and only so
+ * much of it: `runKronk` captures up to CAPTURE_CAP of whatever the binary
+ * decided to print, and `--version` is one line of output, not a place to
+ * empty a stack trace into.
  */
+const STRAY_MAX = 60;
+
 export function parseKronkVersion(stdout) {
   const m = String(stdout).match(/version\s+(\S+)/i);
-  return m ? m[1] : String(stdout).trim() || null;
+  if (m) return m[1];
+  const first = String(stdout).split('\n')[0].trim();
+  return first ? first.slice(0, STRAY_MAX) : null;
 }

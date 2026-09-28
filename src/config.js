@@ -89,6 +89,16 @@ export const config = {
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,
+  // The startup banner's "a newer kronk-cli exists" line asks the package
+  // manager that installed this copy, never the network directly — see
+  // src/update.js. Off entirely for anyone who wants a program that runs no
+  // subprocess it was not asked to run.
+  updateCheck: (process.env.KRONK_UPDATE_CHECK ?? String(file.updateCheck ?? 'true')) !== 'false',
+  // Same reason as modelConfigPath and taskLogDir: so tests never touch the
+  // real one, and a cold machine's first run does not have to guess where to
+  // put it.
+  updateCacheFile: process.env.KRONK_UPDATE_CACHE ?? file.updateCacheFile
+    ?? join(homedir(), '.kronk-cli-update-cache.json'),
   // Paths a previous session granted read-only to the sandbox, via `always` at
   // the credential prompt. Read-only is the whole point: KRONK_SANDBOX_ALLOW
   // grants writes as well, and these are credential stores.

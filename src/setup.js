@@ -207,8 +207,13 @@ export function findOnPath(name, env = process.env) {
  *
  * `stream: true` hands the child our terminal, which is what a 21 GB pull wants;
  * otherwise its output is captured (up to CAPTURE_CAP) for parsing.
+ *
+ * `timeoutMs`, when given, kills the child after that long and still resolves
+ * (never rejects) with whatever was captured — the version check this exists
+ * for runs at startup and must come back on its own regardless of what the
+ * binary does, not hang the thing that asked.
  */
-export function runKronk(argv, { stream = false } = {}) {
+export function runKronk(argv, { stream = false, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('kronk', argv, {
       stdio: ['ignore', stream ? 'inherit' : 'pipe', stream ? 'inherit' : 'pipe'],
@@ -217,8 +222,16 @@ export function runKronk(argv, { stream = false } = {}) {
     const take = (d) => { if (output.length < CAPTURE_CAP) output += d; };
     child.stdout?.setEncoding('utf8').on('data', take);
     child.stderr?.setEncoding('utf8').on('data', take);
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code: code ?? 1, output }));
+
+    let timer;
+    if (timeoutMs) {
+      timer = setTimeout(() => child.kill(), timeoutMs);
+      timer.unref?.();
+    }
+    const settle = (fn) => (arg) => { clearTimeout(timer); fn(arg); };
+
+    child.on('error', settle(reject));
+    child.on('close', settle((code) => resolve({ code: code ?? 1, output })));
   });
 }
 

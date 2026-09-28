@@ -25,6 +25,15 @@ test('suggest: one more dash first, then nearest within two edits', () => {
   assert.equal(suggest('--modell'), '--model');
 });
 
+test('--version and -v parse as the version flag, and are known to the suggester', () => {
+  assert.equal(parseArgv(['--version']).version, true);
+  assert.equal(parseArgv(['-v']).version, true);
+  assert.equal(parseArgv(['x']).version, false, 'off by default');
+  assert.ok(KNOWN.includes('--version') && KNOWN.includes('-v'));
+  // A near-miss still finds it, the same as any other flag.
+  assert.equal(suggest('--versoin'), '--version');
+});
+
 test('the known-option list is the one the parser uses', () => {
   for (const name of KNOWN) {
     assert.equal(parseArgv([name, 'x', 'y']).words.includes(name), false,

@@ -71,7 +71,15 @@ test('child processes are only spawned by the tool layer', () => {
   // setup.js is on the list because `kronk-cli setup` drives the kronk binary —
   // pull, server stop, server start — through one helper. Every other file that
   // wants to run a command still has to be added here deliberately.
-  assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'setup.js', 'tools.js'].sort(),
+  //
+  // update.js is here because the update check has to ask a package manager
+  // (npm view, brew outdated, git fetch/tag) whether a newer kronk-cli
+  // exists, and "ask the manager, never the network" is the whole point of
+  // that feature — see its own module comment for why this spawning does not
+  // belong inside setup.js's `runKronk` (which is specifically the `kronk`
+  // binary door) or context.js's `git` calls (which describe the user's
+  // project, not this program's own install).
+  assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'setup.js', 'tools.js', 'update.js'].sort(),
     'a new file gained the ability to run commands');
 });
 

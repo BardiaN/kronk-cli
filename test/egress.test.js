@@ -79,7 +79,13 @@ test('child processes are only spawned by the tool layer', () => {
   // belong inside setup.js's `runKronk` (which is specifically the `kronk`
   // binary door) or context.js's `git` calls (which describe the user's
   // project, not this program's own install).
-  assert.deepEqual(spawners.sort(), ['context.js', 'mcp.js', 'setup.js', 'tools.js', 'update.js'].sort(),
+  //
+  // rescue.js is here because submitting a job means starting one detached
+  // process that outlives the command that submitted it. That door is not a
+  // detail of the feature, it is the feature: a caller that had to hold the
+  // process open for the whole run is the shape rescue mode exists to replace.
+  assert.deepEqual(spawners.sort(),
+    ['context.js', 'mcp.js', 'rescue.js', 'setup.js', 'tools.js', 'update.js'].sort(),
     'a new file gained the ability to run commands');
 });
 

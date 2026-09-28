@@ -33,6 +33,12 @@ const SPECS = [
   { names: ['--steps'], kind: 'value', key: 'steps' },
   { names: ['--context'], kind: 'value', key: 'context' },
   { names: ['--mcp'], kind: 'optional', key: 'mcp' },
+  { names: ['--role'], kind: 'value', key: 'role' },
+  { names: ['--json'], kind: 'flag', key: 'json' },
+  // Internal: how `kronk-cli rescue` re-invokes itself as the detached
+  // worker for one job id (src/rescue.js). Not documented in --help — it is
+  // not a thing anyone types, only a thing the CLI passes to itself.
+  { names: ['--rescue-worker'], kind: 'value', key: 'rescueWorker' },
 ];
 
 const BY_NAME = new Map(SPECS.flatMap((s) => s.names.map((n) => [n, s])));
@@ -110,6 +116,9 @@ export function parseArgv(argv) {
     context: null,
     steps: null,
     mcp: false, mcpNames: null,
+    role: null,
+    json: false,
+    rescueWorker: null,
     words: [],
   };
   const fail = (message) => ({ ...out, error: message });

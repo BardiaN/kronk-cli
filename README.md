@@ -450,6 +450,88 @@ The profile it writes is the one documented under
 [Tip: use an `/AGENT` profile](#tip-use-an-agent-profile) — `context-window`, `nseq-max`,
 `preserve_thinking` and `max_tokens`, and deliberately no sampling parameters.
 
+### `kronk-cli rescue`
+
+Everywhere else in this document, `kronk-cli` is something *you* talk to. `rescue` is the other
+direction: a job queue so anything that can spawn a process — a script, another CLI, anything
+external that wants to hand off a token-heavy job without sitting on it — can submit a
+self-contained task to the local model, go do something else, and come back for the answer.
+
+```console
+$ kronk-cli rescue "trace how the SSE parser handles multi-line data fields" --role explore
+9k2m1x-4d2-a1b2c3
+
+$ kronk-cli rescue status 9k2m1x-4d2-a1b2c3
+running (step 4)
+
+$ kronk-cli rescue wait 9k2m1x-4d2-a1b2c3
+Multi-line `data:` fields are joined with `\n` in src/sse.js:41-53 before the
+frame is handed to the caller — see accumulateToolCalls's buffer.
+$ echo $?
+0
+```
+
+It is the same delegation `kronk-cli` already does internally — one self-contained task, its own
+context, a report that stands alone — with the caller moved outside the process instead of inside
+it. See [Sub-agents](#sub-agents) for the contract a rescue job runs under; it is the identical
+one.
+
+| Command | |
+|---|---|
+| `kronk-cli rescue "<prompt>" [--role explore\|code] [--model <id>] [-y\|-a] [--steps <n>] [--json]` | Submit. Runs detached; prints a job id and exits immediately — nothing here blocks |
+| `kronk-cli rescue status <id> [--json]` | A snapshot: `queued`, `running (step n)`, `done`, `stopped`, `interrupted` or `failed` |
+| `kronk-cli rescue wait <id> [--json]` | Block until the job reaches one of those last four states, then print its report |
+| `kronk-cli rescue result <id> [--json]` | Print the report. Refuses (exit `4`) with the current state if the job has not finished yet — use `wait` instead of polling `result` in a loop |
+
+**`--role`** is the same split `kronk-cli` gives its own sub-agents: `explore` can only read —
+`read_file`, `list_dir`, `search` — and `code` can also write files and run commands. Default is
+`explore`, the read-only one. **`--model`** is resolved exactly as `-m` resolves it everywhere
+else in this program — exact id, else the closest substring, preferring a served `/AGENT`
+profile — against what Kronk is serving *right now*; a name that matches nothing is refused at
+submit time rather than silently falling back, because a caller that asked for a specific model
+should hear about a bad name immediately, on the process it is still attached to, not from a job
+that failed twenty minutes later. Leaving `--model` out defers the choice to the job itself, the
+same default the session would otherwise use.
+
+**Without `-y`/`-a`, a tool that needs approval is refused and reported, never auto-allowed.**
+Nobody is at the prompt a rescue job would otherwise show, so there is no "ask anyway" — a refused
+tool call comes back in the transcript exactly like a human said no, and the job carries on (or
+does not) from there. This is deliberate and does not have a flag to turn it off: delegating a
+job from outside the process must not become a way past the approval prompts that delegating from
+inside it already cannot get past.
+
+**One at a time.** Kronk holds one resident copy of the model, so a second `rescue` submitted
+while one is running does not run alongside it — its `status` reports `queued` until the first
+job finishes, exactly as the module comment on delegation in `src/subagent.js` already argues for
+sub-agents. A runner that dies mid-job (killed, the machine restarting) does not wedge the queue
+behind it: the next job to check finds the lock's process gone, marks the abandoned job
+`interrupted`, and takes its turn.
+
+**`--json`** on any of the four commands prints one object instead of prose:
+
+```json
+{ "id": "9k2m1x-4d2-a1b2c3", "state": "done", "role": "explore",
+  "model": "unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M/AGENT", "steps": 3, "ms": 11421,
+  "report": "Multi-line `data:` fields are joined with…", "transcript": [ /* the full run */ ] }
+```
+
+`wait`'s exit code is the one place a script gets the state without parsing anything:
+
+| State | Meaning | `wait` exit code |
+|---|---|---|
+| `done` | Finished on its own terms | `0` |
+| `stopped` | Hit its step cap before finishing | `1` |
+| `interrupted` | Killed, or recovered from a runner that died mid-job | `2` |
+| `failed` | The model call itself errored | `3` |
+
+**Records outlive the process that submitted them, on purpose.** They are not sub-agent
+transcripts (`src/tasklog.js`) and do not live in the same place or on the same clock — that
+directory is swept on this session's own schedule specifically because nothing outside the
+process is meant to still want it once the session ends, and a rescue job's whole point is that
+something outside the process still does. A rescue record is kept indefinitely until `wait` or
+`result` actually delivers it, and only then aged out, 24 hours later — `KRONK_RESCUE_DIR`
+overrides where they live, same idea as `KRONK_TASK_LOG_DIR`.
+
 ---
 
 ## Startup: the model is loaded before you type
@@ -782,6 +864,7 @@ Two consequences worth knowing:
 | `KRONK_SUBAGENT_STEPS` | `40` | Tool-call cap for one delegated task |
 | `KRONK_TASK_LOG` | `true` | `false` stops writing sub-agent transcripts, and `/tasks` says so |
 | `KRONK_TASK_LOG_DIR` | the temp dir | Where transcripts are written |
+| `KRONK_RESCUE_DIR` | the temp dir | Where `kronk-cli rescue` keeps its job records — see [`kronk-cli rescue`](#kronk-cli-rescue) |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |

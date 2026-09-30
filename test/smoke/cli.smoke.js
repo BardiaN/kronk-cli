@@ -324,9 +324,12 @@ describe('a delegated task choosing the model it runs on', () => {
     const taskLog = temp('kronk-smoke-tasklog-');
     const { stdout } = await run([
       '--no-context', '--no-warm', '-y', '--steps', '6',
-      'Use the task tool to delegate this to a sub-agent, and run that sub-agent on the '
-      + `model whose id contains "${ctx.lightModel}" rather than on your own model: `
-      + 'report the word OK. Do not answer it yourself.',
+      // The task is named outright: "delegate this: report OK" was read, at
+      // least once, as delegation with no task in it, and the model stopped to
+      // ask what "this" was instead of calling the tool.
+      'Use the task tool to start a sub-agent whose task is: "Reply with the word OK." '
+      + `Run that sub-agent on the model whose id contains "${ctx.lightModel}", not on `
+      + 'your own model. Do not answer it yourself.',
     ], { env: { KRONK_TASK_LOG_DIR: taskLog, KRONK_SUBAGENT_STEPS: '3' }, timeout: 420_000 });
 
     assert.ok(stdout.includes('task'), shows(stdout, 'a task tool call'));

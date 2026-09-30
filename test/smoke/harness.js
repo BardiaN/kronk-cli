@@ -243,8 +243,16 @@ export async function run(args, { env = {}, stdin, timeout = 180_000 } = {}) {
   return { code, stdout: strip(stdout), stderr: strip(stderr) };
 }
 
-/** Single-quote one shell word; the only escaping a fixed set of CLI flags and model ids needs. */
-const shellQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+/**
+ * The pacing pipeline `repl()` runs under `bash -c`. It is a constant: the
+ * CLI path and its arguments arrive as positional parameters (`"$@"`) and the
+ * timings through the environment, so nothing a caller or `SMOKE_MODEL`
+ * supplies is ever parsed as shell text.
+ */
+const REPL_PIPELINE = '( perl -e \'select(undef,undef,undef,$ENV{SMOKE_SETTLE})\'; '
+  + 'printf \'%s\' "$SMOKE_REPL_PAYLOAD"; '
+  + 'perl -e \'select(undef,undef,undef,$ENV{SMOKE_AFTER})\' ) '
+  + '| script -q /dev/null node "$@"';
 
 /**
  * Drive the interactive REPL through a real pty, pacing the input.
@@ -280,14 +288,12 @@ export async function repl(lines, {
   delete fullEnv.KRONK_MODEL;
   Object.assign(fullEnv, env);
   fullEnv.SMOKE_REPL_PAYLOAD = lines.map((l) => `${l}\n`).join('');
+  fullEnv.SMOKE_SETTLE = String(settle);
+  fullEnv.SMOKE_AFTER = String(after);
 
-  const quotedArgs = args.map(shellQuote).join(' ');
-  const cmd = `( perl -e 'select(undef,undef,undef,${settle})'; `
-    + `printf '%s' "$SMOKE_REPL_PAYLOAD"; `
-    + `perl -e 'select(undef,undef,undef,${after})' ) `
-    + `| script -q /dev/null node ${shellQuote(CLI)} ${quotedArgs}`;
-
-  const { stdout, stderr, timedOut } = await spawnCapture('bash', ['-c', cmd], {
+  // `bash -c <script> <$0> <$1...>`: everything after the script is argv.
+  const argv = ['-c', REPL_PIPELINE, 'bash', CLI, ...args];
+  const { stdout, stderr, timedOut } = await spawnCapture('bash', argv, {
     env: fullEnv, cwd: REPO, timeout,
   });
   if (timedOut) throw new Error(`repl(${JSON.stringify(lines)}) did not exit within ${timeout}ms`);

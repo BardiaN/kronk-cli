@@ -51,6 +51,28 @@ const submit = async (env, args) => {
   return r.stdout.trim();
 };
 
+/**
+ * Start a stub that is closed when the test ends, pass or fail. A failed
+ * assertion before an inline `stub.close()` would otherwise leave the server
+ * holding the event loop open, and `node --test` would hang until CI kills it.
+ */
+async function stubFor(t, opts) {
+  const stub = await startStub(opts);
+  t.after(() => stub.close());
+  return stub;
+}
+
+/** Poll until the job reaches `state`, or give up and return what it last was. */
+async function pollUntilState(rescueDir, id, state, timeoutMs = 5_000) {
+  config.rescueDir = rescueDir;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const record = readJob(id);
+    if (record?.state === state || Date.now() > deadline) return record;
+    await new Promise((r) => { setTimeout(r, 10); });
+  }
+}
+
 /** Poll the record directly — faster and less noisy than shelling out for every tick. */
 async function pollUntilTerminal(rescueDir, id, timeoutMs = 15_000) {
   config.rescueDir = rescueDir;
@@ -67,8 +89,8 @@ async function pollUntilTerminal(rescueDir, id, timeoutMs = 15_000) {
 
 // ---- the happy path: queued → running → done ------------------------------
 
-test('a job goes through queued → running → done, and status/wait/result agree at each point', async () => {
-  const stub = await startStub({
+test('a job goes through queued → running → done, and status/wait/result agree at each point', async (t) => {
+  const stub = await stubFor(t, {
     ids: ['stub/small'],
     delayMs: 250,
     turns: [
@@ -119,8 +141,8 @@ test('a job goes through queued → running → done, and status/wait/result agr
 
 // ---- failure states ---------------------------------------------------------
 
-test('a job whose model call errors ends failed, and wait exits 3', async () => {
-  const stub = await startStub({
+test('a job whose model call errors ends failed, and wait exits 3', async (t) => {
+  const stub = await stubFor(t, {
     ids: ['stub/small'],
     turns: [{ status: 500, message: 'the model blew up' }],
   });
@@ -137,8 +159,8 @@ test('a job whose model call errors ends failed, and wait exits 3', async () => 
   assert.equal(waited.code, 3);
 });
 
-test('a job that hits its step cap ends stopped, and wait exits 1', async () => {
-  const stub = await startStub({
+test('a job that hits its step cap ends stopped, and wait exits 1', async (t) => {
+  const stub = await stubFor(t, {
     ids: ['stub/small'],
     turns: [{ tool: ['list_dir', { path: '.' }] }],
   });
@@ -158,8 +180,8 @@ test('a job that hits its step cap ends stopped, and wait exits 1', async () => 
   assert.equal(waited.code, 1);
 });
 
-test('a job is never handed the tool that starts more jobs', async () => {
-  const stub = await startStub({ ids: ['stub/small'] });
+test('a job is never handed the tool that starts more jobs', async (t) => {
+  const stub = await stubFor(t, { ids: ['stub/small'] });
   const { env, rescueDir } = newEnv(stub.url);
   const id = await submit(env, ['have a look around', '--role', 'code']);
 
@@ -183,20 +205,20 @@ test('a job is never handed the tool that starts more jobs', async () => {
 
 // ---- one at a time ------------------------------------------------------------
 
-test('a second submit while one job is running reports queued, not running', async () => {
-  const stub = await startStub({
+test('a second submit while one job is running reports queued, not running', async (t) => {
+  const stub = await stubFor(t, {
     ids: ['stub/small'],
-    delayMs: 600,
+    delayMs: 2000,
     turns: [{ text: 'first job done' }, { text: 'second job done' }],
   });
   const { env, rescueDir } = newEnv(stub.url);
 
   const first = await submit(env, ['the first job']);
-  // Give the first job's worker time to win the lock and start its (slow,
-  // via delayMs) request, but not enough time to finish it.
-  await new Promise((r) => { setTimeout(r, 150); });
-  config.rescueDir = rescueDir;
-  assert.equal(readJob(first).state, 'running', 'sanity: the first job really is under way');
+  // Wait for the first job's worker to win the lock and start its request.
+  // A fixed sleep was too short on a loaded CI runner; the stub's delay keeps
+  // the job running long enough for the second submit to land behind it.
+  const firstRecord = await pollUntilState(rescueDir, first, 'running');
+  assert.equal(firstRecord?.state, 'running', 'sanity: the first job really is under way');
 
   const second = await submit(env, ['the second job']);
   const secondStatus = await cli(env, ['rescue', 'status', second]);
@@ -217,8 +239,8 @@ test('a second submit while one job is running reports queued, not running', asy
 
 // ---- approval, unattended ------------------------------------------------------
 
-test('without --yes, a role that could write is still refused when it tries to — never auto-allowed', async () => {
-  const stub = await startStub({
+test('without --yes, a role that could write is still refused when it tries to — never auto-allowed', async (t) => {
+  const stub = await stubFor(t, {
     ids: ['stub/small'],
     turns: [
       { tool: ['write_file', { path: 'x.txt', content: 'hi' }] },

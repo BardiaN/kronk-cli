@@ -6,6 +6,16 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.1 — 2026-10-01
+
+### Tests
+
+- **smoke**: a local smoke suite that drives the real CLI against a real server ([#91](https://github.com/BardiaN/kronk-cli/pull/91))
+
+### CI
+
+- bump the codeql-action group with 3 updates ([#92](https://github.com/BardiaN/kronk-cli/pull/92))
+
 ## 0.8.0 — 2026-09-28
 
 ### Features

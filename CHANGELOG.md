@@ -6,6 +6,12 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.2 — 2026-10-02
+
+### Fixes
+
+- **update**: resolve the bin symlink before detecting how kronk-cli was installed ([#94](https://github.com/BardiaN/kronk-cli/pull/94))
+
 ## 0.8.1 — 2026-10-01
 
 ### Tests

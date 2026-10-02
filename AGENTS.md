@@ -33,3 +33,19 @@ Everything you produce here — commits, PR titles and bodies, code comments, te
 — carries only the human contributor's identity. Do not add a co-authorship trailer for a tool,
 an attribution notice or badge for how the change was produced, or any mention of the assistant,
 vendor, or product involved.
+
+## GitHub account
+
+The maintainer's machine has more than one account logged in to the `gh` CLI, and the active one
+is often not the one this repository belongs to. Every `gh` call for this repository — opening,
+reviewing or merging a PR, reading checks, querying the API — must act as **BardiaN**, the
+repository owner. Pick the account per command rather than running `gh auth switch`, which
+changes the active account for every other repository on the machine too:
+
+```bash
+GH_TOKEN="$(gh auth token --user BardiaN)" gh pr create ...
+```
+
+Check before the first write of a session: `GH_TOKEN="$(gh auth token --user BardiaN)" gh api
+user --jq .login` must print `BardiaN`. If the token is missing, stop and ask; do not fall back to
+whichever account happens to be active.

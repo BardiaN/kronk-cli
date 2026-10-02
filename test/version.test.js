@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +76,25 @@ test('install-route detection: Homebrew, npm, install.sh and a git checkout are 
 
   // None of the above.
   assert.equal(detectInstall(fakeEntry(root, 'somewhere', 'else')), null);
+});
+
+test('a global npm install launched through its bin symlink is npm, not the git checkout around it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'kronk-routes-symlink-'));
+
+  // nvm's layout, which is how this was found: the node prefix lives inside
+  // ~/.nvm, and ~/.nvm is itself a git checkout. npm links bin/kronk-cli to
+  // the package's src/index.js, and process.argv[1] is the link.
+  const nvm = join(root, '.nvm');
+  mkdirSync(join(nvm, '.git'), { recursive: true });
+  const prefix = join(nvm, 'versions', 'node', 'v24.0.0');
+  const entry = fakeEntry(prefix, 'lib', 'node_modules', 'kronk-cli');
+  writeFileSync(entry, '');
+  mkdirSync(join(prefix, 'bin'));
+  const bin = join(prefix, 'bin', 'kronk-cli');
+  symlinkSync('../lib/node_modules/kronk-cli/src/index.js', bin);
+
+  assert.deepEqual(detectInstall(bin), { route: 'npm' },
+    'the link resolves into node_modules; walking up from bin/ would find ~/.nvm/.git');
 });
 
 test('a receipt outranks a .git ancestor, so a tarball install is never told to git pull', () => {

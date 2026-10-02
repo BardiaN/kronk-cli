@@ -28,7 +28,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { config } from './config.js';
 import { VERSION } from './version.js';
@@ -90,6 +90,15 @@ function findGitRoot(startDir) {
 
 const toPosix = (p) => p.split(sep).join('/');
 
+/** The file a symlinked entry point really is; as given when it cannot be resolved. */
+function resolveEntry(entryPath) {
+  try {
+    return realpathSync(entryPath);
+  } catch {
+    return entryPath;
+  }
+}
+
 /**
  * Where this running copy of kronk-cli came from, read off the path Node
  * resolved for `src/index.js` rather than asked of any registry — the issue's
@@ -117,10 +126,21 @@ const toPosix = (p) => p.split(sep).join('/');
  * is worse than nothing". With no receipt there is nothing to go on but the
  * path, and then a `.git` ancestor is the better guess and wins.
  *
+ * The path is read *after* resolving symlinks. npm installs a global package's
+ * bin as a symlink — `<prefix>/bin/kronk-cli -> ../lib/node_modules/kronk-cli/
+ * src/index.js` — and Node leaves `process.argv[1]` as the link, not its
+ * target. Matched as given, that path has no `node_modules` in it, and the
+ * `.git` walk then climbs out of `bin/` into whatever encloses the prefix:
+ * under nvm that is `~/.nvm`, itself a git checkout, and the banner offered
+ * nvm's own release tag with `git pull` as the fix. Homebrew and `install.sh`
+ * both install a wrapper script that runs the real path, so npm was the only
+ * route that tripped it, but resolving here covers every caller.
+ *
  * Returns null when none of the above matches — a shape this function was
  * never taught, which is the honest answer, not a guess dressed as one.
  */
 export function detectInstall(entryPath) {
+  entryPath = resolveEntry(entryPath);
   const norm = toPosix(entryPath);
   if (/\/Cellar\/kronk-cli\//.test(norm)) return { route: 'brew' };
   if (/\/node_modules\/kronk-cli(\/|$)/.test(norm)) return { route: 'npm' };

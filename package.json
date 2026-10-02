@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "kronk-cli": "./src/index.js"
+    "kronk-cli": "src/index.js"
   },
   "engines": {
     "node": ">=20"

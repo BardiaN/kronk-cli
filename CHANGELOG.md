@@ -6,6 +6,19 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.3 — 2026-10-16
+
+### Build
+
+- bump eslint from 10.11.0 to 10.12.0 ([#98](https://github.com/BardiaN/kronk-cli/pull/98))
+- write the bin path the way npm normalises it ([#96](https://github.com/BardiaN/kronk-cli/pull/96))
+
+### CI
+
+- bump ossf/scorecard-action from 2.4.4 to 2.5.0 ([#101](https://github.com/BardiaN/kronk-cli/pull/101))
+- bump actions/setup-node from 7.0.0 to 7.1.0 ([#100](https://github.com/BardiaN/kronk-cli/pull/100))
+- bump the codeql-action group with 3 updates ([#99](https://github.com/BardiaN/kronk-cli/pull/99))
+
 ## 0.8.2 — 2026-10-02
 
 ### Fixes

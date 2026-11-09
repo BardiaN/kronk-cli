@@ -6,6 +6,16 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.4 — 2026-11-09
+
+### Build
+
+- bump eslint to 10.14.0 and lift minimatch past GHSA-g3hv-75wg-m249 ([#106](https://github.com/BardiaN/kronk-cli/pull/106))
+
+### CI
+
+- bump the codeql-action group with 3 updates ([#104](https://github.com/BardiaN/kronk-cli/pull/104))
+
 ## 0.8.3 — 2026-10-16
 
 ### Build

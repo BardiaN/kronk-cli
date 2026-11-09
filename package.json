@@ -38,6 +38,9 @@
     "@eslint/js": "^10.0.1",
     "eslint": "^10.9.1"
   },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/BardiaN/kronk-cli.git"

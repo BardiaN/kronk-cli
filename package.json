@@ -1,6 +1,6 @@
 {
   "name": "kronk-cli",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "A Claude-Code-style terminal agent for local models served by Kronk.",
   "license": "Apache-2.0",
   "type": "module",
@@ -37,6 +37,9 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.9.1"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
   },
   "repository": {
     "type": "git",

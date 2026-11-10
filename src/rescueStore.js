@@ -1,10 +1,11 @@
 import {
-  mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, unlinkSync,
+  writeFileSync, readFileSync, readdirSync, rmSync, unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { config } from './config.js';
+import { privateDir } from './privateDir.js';
 
 /**
  * The record store behind `kronk-cli rescue` — one JSON file per job, plus a
@@ -64,9 +65,13 @@ const KEEP_MS = 24 * 60 * 60 * 1000;
 /** How the state machine may end. `queued` and `running` are the only other states. */
 export const TERMINAL = new Set(['done', 'stopped', 'interrupted', 'failed']);
 
-/** 0700 / 0600 throughout — a rescue prompt and its transcript are the same material src/tasklog.js guards. */
+/**
+ * 0700 / 0600 throughout — a rescue prompt and its transcript are the same
+ * material src/tasklog.js guards. See src/privateDir.js for why the directory
+ * is checked, not just created.
+ */
 function ensureDir() {
-  mkdirSync(ROOT(), { recursive: true, mode: 0o700 });
+  privateDir(ROOT());
 }
 
 /** Never throw into the caller: a full disk must not take the job down with it. */
@@ -92,6 +97,9 @@ export function newId() {
 
 /** A job as first written: queued, nothing run yet. */
 export function createJob({ role, prompt, model = null, yes = false, auto = false, maxSteps = null }) {
+  // Outside flush()'s catch on purpose: a store that cannot be private should
+  // fail the submit out loud, not hand back an id that will never resolve.
+  ensureDir();
   const id = newId();
   return flush({
     id, role, prompt, model,
@@ -114,7 +122,7 @@ export function createJob({ role, prompt, model = null, yes = false, auto = fals
  */
 export function readJob(id) {
   if (!isJobId(id)) return null;
-  try { return JSON.parse(readFileSync(file(id), 'utf8')); }
+  try { privateDir(ROOT(), { create: false }); return JSON.parse(readFileSync(file(id), 'utf8')); }
   catch { return null; }
 }
 
@@ -186,7 +194,7 @@ export function collect(id) {
 /** Collected records older than `KEEP_MS`; everything else is left alone. */
 export function sweep() {
   let names;
-  try { names = readdirSync(ROOT()); } catch { return 0; }
+  try { privateDir(ROOT(), { create: false }); names = readdirSync(ROOT()); } catch { return 0; }
   let removed = 0;
   for (const f of names) {
     if (!f.endsWith('.json') || f === 'lock.json') continue;
@@ -209,7 +217,7 @@ function isAlive(pid) {
 }
 
 function readLock() {
-  try { return JSON.parse(readFileSync(LOCK(), 'utf8')); }
+  try { privateDir(ROOT(), { create: false }); return JSON.parse(readFileSync(LOCK(), 'utf8')); }
   catch { return null; }
 }
 

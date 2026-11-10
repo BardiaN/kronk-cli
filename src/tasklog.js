@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { config } from './config.js';
+import { privateDir } from './privateDir.js';
 import { c, elapsed } from './ui.js';
 
 /**
@@ -61,7 +62,8 @@ const file = (n) => join(sessionDir(), `task-${String(n).padStart(3, '0')}.json`
  * a shared machine is world-readable by default.
  */
 function ensureDir() {
-  mkdirSync(sessionDir(), { recursive: true, mode: 0o700 });
+  privateDir(ROOT());
+  privateDir(sessionDir());
 }
 
 /** Drop the oldest transcripts once the cap is exceeded. */
@@ -134,7 +136,7 @@ export function startRun(meta) {
 /** Every run this session recorded, oldest first. Summaries only — not the messages. */
 export function listRuns() {
   let names;
-  try { names = readdirSync(sessionDir()); } catch { return []; }
+  try { privateDir(ROOT(), { create: false }); names = readdirSync(sessionDir()); } catch { return []; }
   return names.filter((f) => /^task-\d+\.json$/.test(f)).sort()
     .map((f) => {
       try {
@@ -156,7 +158,7 @@ export function listRuns() {
 
 /** One run in full, or null if there is no such run. */
 export function readRun(n) {
-  try { return JSON.parse(readFileSync(file(n), 'utf8')); }
+  try { privateDir(ROOT(), { create: false }); return JSON.parse(readFileSync(file(n), 'utf8')); }
   catch { return null; }
 }
 
@@ -170,7 +172,7 @@ export function readRun(n) {
 export function sweep({ all = false } = {}) {
   const root = ROOT();
   let dirs;
-  try { dirs = readdirSync(root); } catch { return 0; }
+  try { privateDir(root, { create: false }); dirs = readdirSync(root); } catch { return 0; }
   let removed = 0;
   for (const d of dirs) {
     const full = join(root, d);

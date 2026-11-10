@@ -235,3 +235,17 @@ test('a lock genuinely held by a live process is respected, not stolen', () => {
   assert.equal(acquireLock(waiting.id), false);
   releaseLock(holder.id);
 });
+
+test("a store directory owned by another user is refused at submit, and never read", { skip: typeof process.getuid !== 'function' }, () => {
+  const job = make();
+  const real = process.getuid;
+  process.getuid = () => real() + 1;
+  try {
+    assert.throws(() => make(), /belongs to another user/);
+    assert.equal(readJob(job.id), null, 'a record in a directory someone else controls is not trusted');
+    assert.equal(sweep(), 0);
+  } finally {
+    process.getuid = real;
+  }
+  assert.equal(readJob(job.id).id, job.id, 'and the store works again once it is ours');
+});

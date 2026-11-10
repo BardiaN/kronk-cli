@@ -167,3 +167,17 @@ test('the report is printed once, under its own heading', () => {
   assert.equal(out.split('it is at src/sse.js:12').length - 1, 1, 'the last assistant message is the report');
   assert.match(out, /── report ──/);
 });
+
+test("transcripts are not written into, or read from, a directory owned by another user", { skip: typeof process.getuid !== 'function' }, () => {
+  const run = startRun({ agent: 'explore', prompt: 'p', model: 'small' });
+  const real = process.getuid;
+  process.getuid = () => real() + 1;
+  try {
+    run.step([{ role: 'user', content: 'should not land' }], 1);
+    assert.equal(readRun(run.n), null);
+    assert.deepEqual(listRuns(), []);
+  } finally {
+    process.getuid = real;
+  }
+  assert.equal(readRun(run.n).steps, 0, 'the refused step never reached disk');
+});

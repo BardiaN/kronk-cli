@@ -6,6 +6,16 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.8.5 — 2026-11-10
+
+### Fixes
+
+- refuse a transcript or rescue directory that another user owns ([#109](https://github.com/BardiaN/kronk-cli/pull/109))
+
+### CI
+
+- allow the security workflow to be run by hand ([#108](https://github.com/BardiaN/kronk-cli/pull/108))
+
 ## 0.8.4 — 2026-11-09
 
 ### Build

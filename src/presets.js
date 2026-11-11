@@ -16,7 +16,7 @@ export const NAME = /^[a-z0-9-]+$/;
 export const BUILTINS = new Set([
   'help', 'clear', 'steps', 'auto', 'think', 'thinking', 'agents', 'theme',
   'models', 'tasks', 'mcp', 'compact', 'context', 'model', 'file', 'exit',
-  'quit', 'presets',
+  'quit', 'presets', 'resume',
 ]);
 
 export const userPromptsDir = () => join(homedir(), '.config', 'kronk-cli', 'prompts');

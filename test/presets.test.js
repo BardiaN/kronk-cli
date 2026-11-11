@@ -53,6 +53,12 @@ test('a preset named like a built-in is dropped and reported', () => {
   assert.deepEqual(shadowed, ['clear', 'exit']);
 });
 
+test('/resume cannot be shadowed by a preset', () => {
+  const { presets, shadowed } = loadPresets({ fromConfig: { resume: 'x' } });
+  assert.deepEqual(presets, {});
+  assert.deepEqual(shadowed, ['resume']);
+});
+
 test('expandPreset substitutes every $ARGS, or appends when there is none', () => {
   assert.equal(expandPreset('look at $ARGS then $ARGS', 'x.js'), 'look at x.js then x.js');
   assert.equal(expandPreset('review', 'the diff'), 'review\n\nthe diff');

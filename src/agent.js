@@ -208,6 +208,9 @@ export async function runTurn({
       if (totalUsage && !depth) {
         config.lastUsed = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
       }
+      if (isOverflow(e) && !config.autoCompact) {
+        throw new Error(`${e.message} (auto-compaction is off: shorten the input, or drop --no-compact)`, { cause: e });
+      }
       if (isOverflow(e) && !compacted) {
         compacted = true;
         out(c.yellow('\n  context full — compacting and retrying'));

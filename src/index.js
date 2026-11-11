@@ -2,7 +2,7 @@
 import { stdin, stdout } from 'node:process';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure } from './config.js';
+import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure, warnConfigProblems } from './config.js';
 import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
 import { pickDefault, chatModels, ensureLoaded } from './boot.js';
 import { resolveModel } from './resolve.js';
@@ -490,6 +490,8 @@ async function oneShot(prompt) {
 async function main() {
   // Before anything reaches the network, on every path through the program.
   warnIfInsecure();
+  // A config file that does not parse used to be read as {} without a word.
+  warnConfigProblems();
 
   // At startup, not only at exit: the transcripts worth sweeping are the ones
   // a crash left behind, and the exit path that would have removed them is the
@@ -688,11 +690,14 @@ async function main() {
 
   // Read once at startup: a preset edited mid-session takes a restart, which
   // keeps the shadowed-name warning honest and the dispatch a plain lookup.
-  const { presets, shadowed } = loadPresets({
+  const { presets, shadowed, invalid } = loadPresets({
     fromConfig: config.presets,
     userDir: userPromptsDir(),
     projectDir: projectPromptsDir(process.cwd()),
   });
+  if (invalid.length) {
+    console.error(c.yellow(`  presets skipped because the name is not lowercase letters, digits and hyphens ([a-z0-9-]+): ${invalid.join(', ')}`));
+  }
   if (shadowed.length) {
     console.error(c.yellow(`  presets ignored because a built-in command has the name: ${
       shadowed.map((n) => `/${n}`).join(', ')}`));

@@ -742,6 +742,7 @@ same way this run did.
 | `-y`, `--yes` | off | Auto-approve `edit_file`, `write_file` and `bash` without the autonomous prompt |
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
 | `--no-subagents` | off | Remove the `task` tool, so the model cannot delegate — see [Sub-agents](#sub-agents) |
+| `--no-term-status` | off | Don't set the window title, tab progress or the long-turn bell — see [Terminal status](#terminal-status) |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
 | `-h`, `--help` | — | Print all options and exit |
 | `-v`, `--version` | — | Print the kronk-cli version, and Kronk's if it can be had without a network call, then exit |
@@ -775,6 +776,23 @@ The per-turn usage line still prints after each response; this one is the runnin
 request that fails still counts: Kronk 1.32.8 and later send the tokens spent so far with the
 error (an HTTP error body or an SSE error frame), and the meter and `/context` take them in.
 Older servers send none, and the error is reported as before.
+
+### Terminal status
+
+On a terminal, kronk-cli also tells the window what it is doing, so a tab you are not looking at
+can say so:
+
+- **Title** (OSC 0): `kronk-cli · working`, `kronk-cli · needs approval`, `kronk-cli · ready`. The
+  title you had is pushed on first use and popped on exit.
+- **Progress** (OSC 9;4): an indeterminate indicator while a turn runs, cleared when it stops.
+  Shown by Windows Terminal, Ghostty, iTerm2 and ConEmu; ignored elsewhere.
+- **Bell**: one BEL when a turn that ran 10 seconds or more finishes, or when an approval prompt
+  appears in such a turn. `KRONK_TERM_BELL_AFTER` (or `termBellSeconds`) changes the threshold.
+
+None of these move the cursor, so the status line and the live pane are unaffected. Nothing is
+sent when stdout is not a TTY or `TERM=dumb`. Turn it off with `--no-term-status`,
+`KRONK_TERM_STATUS=0`, or `"termStatus": false` in `~/.kronk-cli.json`. The title and progress are
+restored on exit, including Ctrl-C at the prompt, `SIGTERM`/`SIGHUP` and a crash.
 
 ### It follows your terminal's background
 
@@ -891,6 +909,8 @@ with the repository, so read it as you would any other file you cloned.
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
 | `KRONK_THEME` | `auto` | `dark` or `light` pins the palette; `auto` reads the terminal's background |
+| `KRONK_TERM_STATUS` | `true` | `0` or `false` stops the window title, tab progress and bell — see [Terminal status](#terminal-status) |
+| `KRONK_TERM_BELL_AFTER` | `10` | Seconds a turn must run before finishing (or an approval prompt) rings the bell |
 | `KRONK_UPDATE_CHECK` | `true` | `false` never asks the package manager whether a newer kronk-cli exists — no subprocess, ever |
 | `NO_COLOR` | — | Any value disables colour |
 | `FORCE_COLOR` | — | `0` disables colour; any other value keeps it on through a pipe |

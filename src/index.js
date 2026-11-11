@@ -25,6 +25,7 @@ import { updateStatus } from './update.js';
 import {
   loadPresets, resolveInvocation, listPresets, commandWord, userPromptsDir, projectPromptsDir,
 } from './presets.js';
+import { termStatus } from './termstatus.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
@@ -77,6 +78,8 @@ if (args.help) {
     -y, --yes           approve tools automatically (no autonomous prompt)
         --no-think      disable the model's reasoning pass (faster)
         --no-subagents  remove the task tool; no delegation
+        --no-term-status
+                        don't set the window title, tab progress or bell
         --steps <n>     cap tool calls per task (default: unlimited)
     -h, --help          this message
     -v, --version       print the kronk-cli version, and Kronk's if it can be
@@ -107,6 +110,10 @@ if (args.help) {
                         from what Kronk is serving, see /agents
     KRONK_SUBAGENT_STEPS
                         tool-call cap for one delegated task (default 40)
+    KRONK_TERM_STATUS   0 to stop setting the window title, tab progress and
+                        the long-turn bell (default on, TTY only)
+    KRONK_TERM_BELL_AFTER
+                        seconds a turn must run before it rings (default 10)
     KRONK_UPDATE_CHECK  false to never ask the package manager whether a
                         newer kronk-cli exists (default true)
 
@@ -136,6 +143,19 @@ if (args.version) {
 // --auto: run the whole task unattended (implies --yes)
 const AUTO = args.auto;
 const AUTO_YES = args.yes || AUTO;
+
+// Off for a pipe, TERM=dumb, the flag, the env var or the config key. Every
+// exit path restores the user's title and clears the tab progress: 'exit'
+// covers a normal end, process.exit() and a crash; the signals below it are
+// the ones that skip 'exit' unless something turns them into one.
+const term = termStatus({
+  enabled: config.termStatus && !args.noTermStatus,
+  bellAfterMs: config.termBellSeconds * 1000,
+});
+if (term.active) {
+  process.on('exit', () => term.restore());
+  for (const [sig, code] of [['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => process.exit(code));
+}
 
 /** `~/Library/Keychains` reads better than the absolute path in a prompt. */
 const tilde = (p) => (p.startsWith(`${homedir()}/`) ? `~/${p.slice(homedir().length + 1)}` : p);
@@ -428,6 +448,7 @@ async function oneShot(prompt) {
     console.error(c.grey(`  granted read-only ${paths.map(tilde).join(', ')} to ${binary} (--yes)`));
     return 'yes';
   };
+  term.working();
   try {
     await runTurn({
       messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: AUTO,
@@ -436,6 +457,7 @@ async function oneShot(prompt) {
     if (e.name !== 'AbortError') { console.error(c.red(`  ${e.message}`)); process.exitCode = 1; }
   } finally {
     mcp?.close();
+    term.ready();
   }
 }
 
@@ -557,7 +579,10 @@ async function main() {
   let autoApprove = AUTO_YES;
   const approve = async (name) => {
     if (autoApprove) return true;
-    const a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase();
+    term.approval();
+    let a;
+    try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase(); }
+    finally { term.working(); }
     return a === 'y' || a === 'yes';
   };
 
@@ -570,8 +595,12 @@ async function main() {
       return 'yes';
     }
     console.log(c.yellow(`  ${binary} reads ${paths.map(tilde).join(', ')}, which the sandbox denies.`));
-    const a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] ')))
-      .trim().toLowerCase();
+    term.approval();
+    let a;
+    try {
+      a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] ')))
+        .trim().toLowerCase();
+    } finally { term.working(); }
     if (a === 'always' || a === 'a') return 'always';
     return a === 'y' || a === 'yes' ? 'yes' : 'no';
   };
@@ -743,6 +772,7 @@ async function main() {
 
     messages.push({ role: 'user', content: expanded ?? input });
     ac = new AbortController();
+    term.working();
     try {
       await runTurn({
         messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: isAuto(),
@@ -752,6 +782,7 @@ async function main() {
       else console.error(c.red(`\n  ${e.message}`));
     } finally {
       ac = null;
+      term.ready();
     }
   }
 

@@ -119,6 +119,10 @@ export const config = {
   // Named prompts, `/<name>` in the REPL — validated and merged with the
   // prompt directories in src/presets.js.
   presets: file.presets ?? null,
+  // Window title, tab progress and a bell on long turns — src/termstatus.js.
+  // `KRONK_TERM_STATUS=0` or `false` turns it off, as does `termStatus: false`.
+  termStatus: !/^(0|false|off)$/i.test(process.env.KRONK_TERM_STATUS ?? String(file.termStatus ?? 'true')),
+  termBellSeconds: Number(process.env.KRONK_TERM_BELL_AFTER ?? file.termBellSeconds ?? 10),
   lastUsed: 0,
   // The startup scan of the working directory, kept so a sub-agent starts
   // knowing what the project is instead of spending its first two steps on it.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSseParser, accumulateToolCalls } from '../src/sse.js';
+import { createSseParser, accumulateToolCalls, errorFrame, errorUsage } from '../src/sse.js';
 
 test('parses complete events', () => {
   const p = createSseParser();
@@ -66,4 +66,36 @@ test('tolerates a delta with no index', () => {
 
 test('a missing tool_calls field is a no-op', () => {
   assert.equal(accumulateToolCalls(new Map(), undefined).size, 0);
+});
+
+// Shape from Kronk 1.32.8 (marshalChatStreamError): the usage sits beside the
+// error, not inside it.
+const KRONK_ERROR_FRAME = {
+  error: { message: 'inference failed', type: 'server_error', code: 'server_error' },
+  usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+};
+
+test('errorFrame turns a Kronk error frame into an Error carrying its usage', () => {
+  const e = errorFrame(KRONK_ERROR_FRAME);
+  assert.match(e.message, /inference failed/);
+  assert.deepEqual(e.usage, KRONK_ERROR_FRAME.usage);
+});
+
+test('errorFrame: an older server with no usage still yields the error, usage null', () => {
+  const e = errorFrame({ error: { message: 'boom' } });
+  assert.match(e.message, /boom/);
+  assert.equal(e.usage, null);
+});
+
+test('errorFrame ignores ordinary chunks', () => {
+  assert.equal(errorFrame({ choices: [{ delta: { content: 'hi' } }] }), null);
+  assert.equal(errorFrame({ usage: { prompt_tokens: 1 }, choices: [] }), null);
+});
+
+test('errorUsage accepts usage at the top level or nested under error', () => {
+  const u = { prompt_tokens: 3, completion_tokens: 4 };
+  assert.deepEqual(errorUsage({ error: {}, usage: u }), u);
+  assert.deepEqual(errorUsage({ error: { usage: u } }), u);
+  assert.equal(errorUsage({ error: {} }), null);
+  assert.equal(errorUsage(null), null);
 });

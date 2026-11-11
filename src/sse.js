@@ -43,3 +43,27 @@ export function accumulateToolCalls(calls, deltas) {
   }
   return calls;
 }
+
+/**
+ * Token usage that a failed request carries. Kronk 1.32.8 puts it beside the
+ * error (`{"error":{...},"usage":{...}}`), so tokens spent before the failure
+ * are not lost; the nested spelling is accepted too in case a route wraps it.
+ * Older servers send neither, which is `null` here, never an error.
+ */
+export function errorUsage(body) {
+  const u = body?.usage ?? body?.error?.usage;
+  return u && typeof u === 'object' ? u : null;
+}
+
+/**
+ * If an SSE chunk is an error frame, the Error to throw for it, carrying any
+ * usage. Before this the frame was skipped (it has no `choices`), so a failed
+ * stream looked like an empty, successful one.
+ */
+export function errorFrame(chunk) {
+  if (!chunk || chunk.error == null) return null;
+  const msg = typeof chunk.error === 'string' ? chunk.error : chunk.error.message;
+  const err = new Error(`stream error — ${String(msg ?? 'unknown error').slice(0, 400)}`);
+  err.usage = errorUsage(chunk);
+  return err;
+}

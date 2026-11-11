@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { samplingOverride, parseLimits, NO_LIMITS } from '../src/client.js';
+import { createServer } from 'node:http';
+import { samplingOverride, parseLimits, NO_LIMITS, streamChat } from '../src/client.js';
 import { config, applyLimits, DEFAULT_MAX_TOKENS } from '../src/config.js';
 
 // Metadata as Kronk actually reports it (strings), matched against the
@@ -148,4 +149,84 @@ test('switching to a model with no profile clears the previous model’s limits'
   assert.equal(config.contextWindow, null, 'a stale 131k window is worse than none');
   assert.equal(config.templatePreservesThinking, false);
   assert.equal(config.maxTokens, DEFAULT_MAX_TOKENS);
+});
+
+// ---- usage that rides on a failed request -------------------------------
+// Kronk 1.32.8 sends `usage` with a chat error. It must reach the caller as a
+// usage event ahead of the throw, and an older server without it must fail
+// exactly as before.
+
+async function drain(gen) {
+  const events = [];
+  try {
+    for await (const ev of gen) events.push(ev);
+  } catch (error) {
+    return { events, error };
+  }
+  return { events, error: null };
+}
+
+async function withStub(handler, fn) {
+  const server = createServer(handler);
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const saved = config.baseUrl;
+  config.baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  try { return await fn(); } finally {
+    config.baseUrl = saved;
+    await new Promise((r) => server.close(r));
+  }
+}
+
+const CALL = { model: 'm', messages: [{ role: 'user', content: 'hi' }] };
+const USAGE = { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 };
+
+test('an SSE error frame yields usage first, then throws', async () => {
+  await withStub((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('data: {"choices":[{"delta":{"content":"par"}}]}\n\n');
+    res.write(`data: ${JSON.stringify({ error: { message: 'inference failed', type: 'server_error' }, usage: USAGE })}\n\n`);
+    res.end('data: [DONE]\n\n');
+  }, async () => {
+    const { events, error } = await drain(streamChat(CALL));
+    assert.deepEqual(events.map((e) => e.type), ['text', 'usage']);
+    assert.deepEqual(events[1].value, USAGE);
+    assert.match(error.message, /inference failed/);
+  });
+});
+
+test('an SSE error frame from an older server (no usage) still throws', async () => {
+  await withStub((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.end('data: {"error":{"message":"inference failed"}}\n\ndata: [DONE]\n\n');
+  }, async () => {
+    const { events, error } = await drain(streamChat(CALL));
+    assert.deepEqual(events, []);
+    assert.match(error.message, /inference failed/);
+  });
+});
+
+test('an HTTP error body with usage yields it before the throw, at either nesting', async () => {
+  for (const body of [
+    { error: { message: 'boom' }, usage: USAGE },
+    { error: { message: 'boom', usage: USAGE } },
+  ]) {
+    await withStub((req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    }, async () => {
+      const { events, error } = await drain(streamChat(CALL));
+      assert.deepEqual(events, [{ type: 'usage', value: USAGE }]);
+      assert.match(error.message, /^500 \/chat\/completions — /);
+    });
+  }
+});
+
+test('an HTTP error body without usage, or not JSON, throws with no usage event', async () => {
+  for (const body of ['{"error":{"message":"boom"}}', 'upstream exploded']) {
+    await withStub((req, res) => { res.writeHead(502); res.end(body); }, async () => {
+      const { events, error } = await drain(streamChat(CALL));
+      assert.deepEqual(events, []);
+      assert.match(error.message, /^502 /);
+    });
+  }
 });

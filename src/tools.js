@@ -252,7 +252,9 @@ export const TOOLS = [
   def('bash_output',
     'A bash command that outlives its timeout keeps running in the background and is given a job id. '
     + 'Call this with that id to read what it has printed since you last looked and to see whether it has '
-    + 'finished (with its exit status). Set kill to true to stop it.',
+    + 'finished (with its exit status). If the job is still running and has printed nothing new, this waits up '
+    + 'for a few seconds for output or exit before answering, so there is no need to poll it in a loop. '
+    + 'Set kill to true to stop it.',
     {
       id: { type: 'string', description: 'The job id from the bash result, e.g. "bg1".' },
       kill: { type: 'boolean', description: 'Stop the job instead of just reading it.' },
@@ -568,12 +570,32 @@ function unread(buf, total, read) {
   return { text: buf.slice(Math.max(0, read - start)), dropped: Math.max(0, start - read) };
 }
 
+/** How long `bash_output` waits on a running job that has printed nothing new. */
+export const JOB_WAIT_MS = 5000;
+
+/** Resolve when `job` has output the model has not seen, has finished, `ms` pass, or `signal` aborts. */
+function waitForJob(job, ms, signal) {
+  const fresh = () => {
+    const s = job.snapshot();
+    return s.outTotal > job.outRead || s.errTotal > job.errRead;
+  };
+  // Output that is only the cwd marker is not news; it arrives with the exit.
+  if (fresh() || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { clearInterval(tick); clearTimeout(limit); signal?.removeEventListener('abort', done); resolve(); };
+    const tick = setInterval(() => { if (job.done || fresh()) done(); }, 50);
+    const limit = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+    job.closed.then(done);
+  });
+}
+
 /**
  * Read a background job: new output since the last read, and its status.
  * With `kill`, stop it first. A finished job is forgotten once its final
  * output has been handed over.
  */
-export async function readJob(id, { kill = false } = {}) {
+export async function readJob(id, { kill = false, waitMs = 0, signal } = {}) {
   const job = jobs.get(String(id ?? '').trim());
   if (!job) {
     if (discarded.has(String(id ?? '').trim())) {
@@ -586,6 +608,10 @@ export async function readJob(id, { kill = false } = {}) {
     job.killTree('SIGKILL');
     await Promise.race([job.closed, new Promise((r) => setTimeout(r, 2000))]);
   }
+  // Nothing new yet and still running: a model that re-asks at once only burns
+  // a round trip per poll. Hold the call until output arrives, the job ends,
+  // the wait runs out or the turn is aborted.
+  if (!kill && !job.done && waitMs > 0) await waitForJob(job, waitMs, signal);
   const snap = job.snapshot();
   const o = unread(snap.out, snap.outTotal, job.outRead);
   const e = unread(snap.err, snap.errTotal, job.errRead);
@@ -876,7 +902,7 @@ export async function runTool(name, args, opts = {}) {
         return runBash(args.cmd, opts);
 
       case 'bash_output':
-        return readJob(args.id, { kill: args.kill === true });
+        return readJob(args.id, { kill: args.kill === true, waitMs: opts.waitMs ?? JOB_WAIT_MS, signal: opts.signal });
 
       case 'set_plan':
         return setPlan(args.items);

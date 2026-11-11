@@ -106,6 +106,38 @@ test('bash_output of a job that has finished does not show the cwd marker', asyn
   assert.ok(!read.includes('__KRONK_CWD__'), read);
 });
 
+test('bash_output waits on a quiet running job and returns when output arrives', async () => {
+  const out = await runBash('sleep 0.8; echo late; sleep 10', { timeoutMs: 200 });
+  const id = out.match(/job (bg\d+)/)[1];
+  const t0 = Date.now();
+  const read = await runTool('bash_output', { id }, { waitMs: 4000 });
+  const took = Date.now() - t0;
+  assert.match(read, /still running/);
+  assert.match(read, /late/);
+  assert.ok(took >= 400 && took < 3000, `waited ${took}ms: long enough to catch the output, not the whole limit`);
+  killAllJobs();
+});
+
+test('bash_output wait is bounded, abortable and skipped when the job is done', async () => {
+  const out = await runBash('sleep 10', { timeoutMs: 200 });
+  const id = out.match(/job (bg\d+)/)[1];
+
+  let t0 = Date.now();
+  assert.match(await runTool('bash_output', { id }, { waitMs: 300 }), /no new output/);
+  assert.ok(Date.now() - t0 < 2000, 'the wait is capped');
+
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 150);
+  t0 = Date.now();
+  await runTool('bash_output', { id }, { waitMs: 4000, signal: ac.signal });
+  assert.ok(Date.now() - t0 < 2000, 'an abort ends the wait');
+
+  t0 = Date.now();
+  await runTool('bash_output', { id, kill: true }, { waitMs: 4000 });
+  assert.ok(Date.now() - t0 < 3000, 'kill never waits');
+  assert.equal(TOOLS.find((t) => t.function.name === 'bash_output').function.description.includes('waits'), true);
+});
+
 test('built-in approval gating covers exactly the mutating tools', () => {
   assert.ok(NEEDS_APPROVAL.has('write_file'));
   assert.ok(NEEDS_APPROVAL.has('edit_file'));
@@ -274,7 +306,7 @@ test('bash_output returns only new output, then the exit status', async () => {
   const out = await runBash('echo one; sleep 0.6; echo two', { timeoutMs: 200 });
   const id = out.match(/job (bg\d+)/)[1];
   assert.match(out, /one/);
-  const mid = await runTool('bash_output', { id });
+  const mid = await runTool('bash_output', { id }, { waitMs: 0 });
   assert.match(mid, /still running/);
   assert.match(mid, /\(no new output\)/, 'one was already handed over');
   await new Promise((r) => setTimeout(r, 900));

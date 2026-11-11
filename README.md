@@ -1457,7 +1457,9 @@ the model gets what it printed so far plus a job id:
 ```
 
 The model then calls `bash_output` to read what the job has printed since it last looked, and to
-see its exit status once it ends; `{"id":"bg1","kill":true}` stops it. Each job keeps at most the
+see its exit status once it ends. If the job is still running and has printed nothing new, the call
+waits up to 5 seconds for output or exit (Ctrl-C ends the wait) instead of answering empty, so a
+model that polls does not spin. `{"id":"bg1","kill":true}` stops it. Each job keeps at most the
 last 400,000 characters per stream (the drop is reported), at most 8 jobs run at once — past that a
 timeout kills, as it used to — and every job is killed when you `/exit`, `/clear`, or the terminal
 closes. A job never changes the session directory. Each command runs in its own process group, so

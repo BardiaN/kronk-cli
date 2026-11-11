@@ -566,7 +566,11 @@ function finishJob(job, code, signal, note = null) {
   }
 }
 
-/** Kill every background job. Called on exit, on /exit and on /clear. */
+/** Kill functions of the foreground commands running right now. */
+const foreground = new Set();
+const INTERRUPT_GRACE_MS = 2000;
+
+/** Kill every background job and any foreground command. Called on exit, on /exit and on /clear. */
 export function killAllJobs() {
   for (const j of jobs.values()) if (!j.done) j.killTree('SIGKILL');
   jobs.clear();
@@ -672,9 +676,10 @@ export async function readJob(id, { kill = false, waitMs = 0, signal } = {}) {
  * infamous `exit code ?`. Spawning directly gives us live output, the real
  * signal, and whatever the command managed to print before it died.
  */
-export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } = {}) {
+export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT, signal } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
+    if (signal?.aborted) return resolve('error: interrupted before it started (Ctrl-C); the command was not run.');
     // Own process group: killing bash alone leaves its children running and
     // holding the stdout pipe open, so `close` would not fire until they
     // finished anyway — a 5s timeout that returned after 30s.
@@ -709,6 +714,23 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       try { process.kill(-child.pid, sig); }
       catch { try { child.kill(sig); } catch { /* already gone */ } }
     };
+
+    // Ctrl-C: the command runs in its own process group, so the terminal's
+    // SIGINT never reaches it. Stop it ourselves — politely, then for good.
+    let interrupted = false;
+    let hardKill = null;
+    const onAbort = () => {
+      if (job) return;           // a background job outlives the turn that started it
+      interrupted = true;
+      killTree('SIGTERM');
+      hardKill = setTimeout(() => killTree('SIGKILL'), INTERRUPT_GRACE_MS);
+    };
+    const release = () => {
+      signal?.removeEventListener('abort', onAbort);
+      foreground.delete(killTree);
+      clearTimeout(hardKill);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     let onProgress = progress;
     let out = '';
@@ -768,7 +790,8 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
         job.outRead = outTotal;
         job.errRead = errTotal;
         onProgress = null;
-        armExitCleanup();
+        signal?.removeEventListener('abort', onAbort);
+        foreground.delete(killTree);
         // Without this the pipes keep the event loop alive and the exit hook
         // that kills background jobs would never get to run.
         child.unref();
@@ -792,6 +815,7 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
 
     child.on('error', (e) => {
       clearTimeout(timer);
+      release();
       if (job) { finishJob(job, null, null, e.message); return; }
       // `cwd:`, not `ran in:` — this fires before any output exists, so nothing
       // ever ran and there is no final directory to report. Naming one would be
@@ -799,9 +823,10 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       resolve(`error: could not start command — ${e.message}\ncwd: ${session.cwd}`);
     });
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code, sig) => {
       clearTimeout(timer);
-      if (job) { finishJob(job, code, signal); return; }
+      if (job) { finishJob(job, code, sig); return; }
+      release();
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       const { body, pwd, escaped } = applyCwd(out, MARK);
       const where = whereLines(pwd, escaped);
@@ -815,6 +840,13 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       // reader never sees.
       const hint = credentialHint(cmd);
 
+      if (interrupted) {
+        return resolve(clip([
+          `error: interrupted by the user (Ctrl-C) after ${secs}s; the command was stopped.`,
+          ...where,
+          tail || '(no output before it was interrupted)',
+        ].filter(Boolean).join('\n')));
+      }
       if (timedOut) {
         return resolve(clip([
           `error: killed after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s).`,
@@ -833,8 +865,8 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
         return resolve(escaped ? `${where.join('\n')}\n${text}` : text);
       }
       return resolve(clip([
-        signal
-          ? `error: killed by ${signal} after ${secs}s`
+        sig
+          ? `error: killed by ${sig} after ${secs}s`
           : `error: exit code ${code} after ${secs}s`,
         ...where,
         hint,

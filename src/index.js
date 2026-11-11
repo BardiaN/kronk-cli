@@ -721,6 +721,9 @@ async function main() {
       messages.length = 1;
       config.lastUsed = 0;
       killAllJobs();
+      // The cleared conversation is a new one; keeping the id would let the
+      // next save overwrite the session it just replaced.
+      session = { id: newSessionId(), createdAt: new Date().toISOString() };
       console.log(c.grey('  conversation cleared'));
       continue;
     }

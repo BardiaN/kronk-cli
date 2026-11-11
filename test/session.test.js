@@ -183,6 +183,9 @@ test('argv: --resume with and without an id, -r, and --sessions', () => {
   );
   assert.equal(parseArgv(['-r', 'abc-0123ef']).resumeId, 'abc-0123ef');
   assert.equal(parseArgv(['--sessions']).sessions, true);
+  // A prefix is taken too, to be resolved by findSession.
+  assert.equal(parseArgv(['--resume', 'abc']).resumeId, 'abc');
+  assert.equal(parseArgv(['--resume', 'abc-01']).resumeId, 'abc-01');
   // A prompt after the flag stays a prompt.
   const p = parseArgv(['--resume', 'fix the bug']);
   assert.equal(p.resumeId, null);

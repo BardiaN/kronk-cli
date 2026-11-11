@@ -15,7 +15,7 @@ import { resolveApprovalMode } from './approval.js';
  * "did you mean" suggestion read from it, so a new option cannot be understood
  * by one and unknown to the other.
  *
- * kind: 'id' takes the next token only when it is shaped like a session id.
+ * kind: 'id' takes the next token only when it is shaped like (a prefix of) a session id.
  * kind: 'flag' takes nothing, 'value' requires the next token, 'optional' takes
  * the next token only when it does not look like an option.
  */
@@ -61,8 +61,12 @@ export const KNOWN = [...BY_NAME.keys()].sort();
  */
 const OPTIONISH = /^-\S+$/;
 
-/** Same shape as isSessionId in src/session.js, which this file stays free of. */
-const SESSION_ID = /^[0-9a-z]+-[0-9a-f]{6}$/;
+/**
+ * The id alphabet, so a prefix works as well as a whole id. A word of plain
+ * lowercase letters would match too; it is then looked up, and reported as
+ * not found, rather than silently read as a prompt.
+ */
+const SESSION_ID = /^[0-9a-z][0-9a-z-]*$/;
 
 const STEPS_WORDS = /^(0|off|none|inf|unlimited)$/i;
 

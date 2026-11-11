@@ -32,7 +32,7 @@ import {
 } from './presets.js';
 import { termStatus } from './termstatus.js';
 import {
-  newSessionId, findSession, listSessions, listLines, summary, trySave, storable,
+  newSessionId, findSession, sessionElsewhere, unreadableSessions, listSessions, listLines, summary, trySave, storable,
   restoreMessages, hasConversation, countTurns,
 } from './session.js';
 
@@ -645,12 +645,24 @@ async function main() {
   };
   if (args.resume) {
     const s = findSession(process.cwd(), args.resumeId);
+    const bad = unreadableSessions(process.cwd());
+    if (bad.length) {
+      console.log(c.yellow(`  ${bad.length} saved session file${bad.length === 1 ? '' : 's'} here could not be read and ${bad.length === 1 ? 'was' : 'were'} skipped (${bad[0]})`));
+    }
     if (s) {
       loadSession(s);
     } else {
-      console.log(c.yellow(args.resumeId
-        ? `  no saved session "${args.resumeId}" for this directory — starting fresh`
-        : '  no saved session for this directory — starting fresh'));
+      const there = sessionElsewhere(process.cwd(), args.resumeId);
+      if (there) {
+        console.log(c.yellow(there.folder
+          ? `  session ${there.id} belongs to ${there.folder}, not this folder — to resume it: cd ${JSON.stringify(there.folder)} && kronk-cli --resume ${there.id}`
+          : `  session ${there.id} was saved from a different folder, not this one — cd there and run: kronk-cli --resume ${there.id}`));
+        console.log(c.grey('  starting fresh here'));
+      } else {
+        console.log(c.yellow(args.resumeId
+          ? `  no saved session "${args.resumeId}" for this directory — starting fresh`
+          : '  no saved session for this directory — starting fresh'));
+      }
     }
   }
   // The system prompt is the one record of which mode we are in — /auto rewrites

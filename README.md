@@ -945,6 +945,59 @@ with the repository, so read it as you would any other file you cloned.
 `sandboxReadable` is the list `always` writes at the credential prompt — paths the sandbox lifts
 its **read** denial on, and nothing more. Unlike `KRONK_SANDBOX_ALLOW` it never grants writes.
 Entries may be absolute or `~`-relative, and one that no longer exists is ignored in silence.
+`hooks` is described under [Hooks](#hooks).
+
+---
+
+## Hooks
+
+Run your own commands before and after a tool call, from `~/.kronk-cli.json`:
+
+```json
+{
+  "hooks": {
+    "pre": [
+      { "match": "bash", "command": "node ~/bin/no-rm-rf.js", "timeout": 5, "onFailure": "block" }
+    ],
+    "post": [
+      { "match": "write_file", "command": "npx prettier --write \"$(jq -r .args.path)\"" }
+    ]
+  }
+}
+```
+
+`match` is a regular expression tested against the tool name (`bash`, `write_file`, an MCP
+tool's qualified name, `task`); leave it out to match every tool. The `command` runs through your
+shell in the launch directory, with the call as JSON on stdin:
+
+```json
+{ "tool": "write_file", "args": { "path": "a.js", "content": "..." }, "cwd": "/work/app" }
+```
+
+Post-hooks also get `"result"` and `"ok"`. The environment carries `KRONK_TOOL`.
+
+| Exit | Pre-hook | Post-hook |
+|---|---|---|
+| `0` | the call goes ahead | nothing happens; output is discarded |
+| `2` | the call is **blocked**; the hook's stderr is the tool result the model sees | the hook's stderr is appended to the result as a note |
+| anything else, or `timeout` seconds (default 10) | follows `onFailure`: `allow` (default) continues with a warning, `block` blocks | warning only |
+
+Hooks run **after** you accept an approval prompt, so they can refuse a call but never approve
+one. They are your own commands: they do not go through the `bash` tool's sandbox, and a
+sub-agent's tool calls run them too. An entry with an invalid regex or no `command` is ignored.
+A sample pre-hook that blocks `rm -rf`:
+
+```js
+// ~/bin/no-rm-rf.js
+let s = '';
+process.stdin.on('data', (d) => { s += d; }).on('end', () => {
+  const { args } = JSON.parse(s);
+  if (/\brm\s+-\w*r\w*f/.test(args.cmd ?? '')) {
+    console.error('rm -rf is not allowed here; delete specific files instead');
+    process.exit(2);
+  }
+});
+```
 
 ---
 

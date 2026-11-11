@@ -94,7 +94,7 @@ sudo unshare --net bash -c 'ip link set lo up; kronk-cli --models'
 CI runs exactly this on every pull request against a stub server, and a second step proves the
 namespace was really isolated so a pass cannot be a false negative.
 
-Or just read `src/` — it is under 1,500 lines with no dependencies, and every network call goes
+Or just read `src/` — it is about 8,500 lines of JavaScript in `src/*.js` with no dependencies, and every network call goes
 through one function in `src/client.js`.
 
 ---

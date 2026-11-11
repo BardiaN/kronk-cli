@@ -87,3 +87,9 @@ export function listPresets(presets, width = 70) {
     return `/${name}  ${preview}`;
   });
 }
+
+/** The command word of a slash input (`/steps 5` -> `steps`), or null. */
+export function commandWord(input) {
+  const m = /^\/(\S+)/.exec(input);
+  return m ? m[1] : null;
+}

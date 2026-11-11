@@ -23,7 +23,7 @@ import { runRescue } from './rescue.js';
 import { VERSION, parseKronkVersion } from './version.js';
 import { updateStatus } from './update.js';
 import {
-  loadPresets, resolveInvocation, listPresets, userPromptsDir, projectPromptsDir,
+  loadPresets, resolveInvocation, listPresets, commandWord, userPromptsDir, projectPromptsDir,
 } from './presets.js';
 
 // ---- argv -------------------------------------------------------------
@@ -616,7 +616,7 @@ async function main() {
       console.log(c.grey('  conversation cleared'));
       continue;
     }
-    if (input.startsWith('/steps')) {
+    if (commandWord(input) === 'steps') {
       const raw = input.split(/\s+/)[1];
       if (raw !== undefined) {
         config.maxSteps = /^(0|off|none|inf|unlimited)$/i.test(raw) ? Infinity : Number(raw);

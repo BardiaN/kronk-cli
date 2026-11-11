@@ -76,3 +76,11 @@ test('listPresets previews the first non-empty line, truncated', () => {
   assert.equal(lines[0], '/a  first line');
   assert.equal(lines[1], `/b  ${'x'.repeat(9)}…`);
 });
+
+test('commandWord splits on the whole word, so /steps-audit is not /steps', async () => {
+  const { commandWord } = await import('../src/presets.js');
+  assert.equal(commandWord('/steps'), 'steps');
+  assert.equal(commandWord('/steps 5'), 'steps');
+  assert.equal(commandWord('/steps-audit src'), 'steps-audit');
+  assert.equal(commandWord('hello'), null);
+});

@@ -6,6 +6,28 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.9.0 — 2026-11-11
+
+### Features
+
+- **repl**: steer a running task by typing while it works ([#130](https://github.com/BardiaN/kronk-cli/pull/130))
+- **session**: resume a previous REPL session with --resume, --sessions and /resume ([#132](https://github.com/BardiaN/kronk-cli/pull/132))
+- **repl**: attach images to a message with /file ([#123](https://github.com/BardiaN/kronk-cli/pull/123))
+- **hooks**: run user commands before and after a tool call ([#128](https://github.com/BardiaN/kronk-cli/pull/128))
+- **tools**: keep a bash command running in the background when it hits its timeout ([#126](https://github.com/BardiaN/kronk-cli/pull/126))
+- **approval**: add --deny to refuse tools that need approval ([#127](https://github.com/BardiaN/kronk-cli/pull/127))
+- **ui**: report working, needs approval and ready to the terminal ([#133](https://github.com/BardiaN/kronk-cli/pull/133))
+- **repl**: saved prompt presets invoked as /<name> ([#117](https://github.com/BardiaN/kronk-cli/pull/117))
+- **agent**: run read-only tool calls concurrently ([#114](https://github.com/BardiaN/kronk-cli/pull/114))
+- **tools**: add edit_file for exact string replacement ([#112](https://github.com/BardiaN/kronk-cli/pull/112))
+
+### Fixes
+
+- **tools**: make bash_output wait on a quiet running job ([#139](https://github.com/BardiaN/kronk-cli/pull/139))
+- **tools**: keep the cwd marker out of live bash progress ([#137](https://github.com/BardiaN/kronk-cli/pull/137))
+- **agent**: honour --no-compact when the server reports an overflow ([#135](https://github.com/BardiaN/kronk-cli/pull/135))
+- **client**: count the usage a failed request carries ([#121](https://github.com/BardiaN/kronk-cli/pull/121))
+
 ## 0.8.5 — 2026-11-10
 
 ### Fixes

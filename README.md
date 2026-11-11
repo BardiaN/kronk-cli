@@ -1186,6 +1186,10 @@ never gated. See [Autonomous mode](#autonomous-mode) for what the harness then d
 command a sub-agent asks for comes back to the same prompt you would have seen had the main
 agent asked for it.
 
+When the model asks for several `read_file`, `list_dir` or `search` calls in one message, up to
+four run at once. Results still reach the model, and the screen, in the order it asked. Anything
+that writes, runs a command, delegates, or comes from an MCP server runs alone and in order.
+
 `--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
 escape the launch root — including through a symlink. `bash` additionally runs under an OS
 sandbox where one is available; see [Scope](#scope) for exactly what that covers. `bash` keeps its working directory **between calls**, so a bare `cd`

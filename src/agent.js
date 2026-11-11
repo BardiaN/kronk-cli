@@ -13,6 +13,7 @@ import {
   carryChecklist, clearPlan, openItems, outstandingLines, planLines, pushNudge,
 } from './plan.js';
 import { runTask, taskTools } from './subagent.js';
+import { READ_ONLY, planBatches, runConcurrently } from './batch.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
 
@@ -273,7 +274,50 @@ export async function runTurn({
       })),
     });
 
+    // Consecutive read-only calls overlap; everything else keeps its place.
+    // MCP and `task` are excluded by name, and a name not in `tools` is a call
+    // to a tool that does not exist, which runTool answers on its own.
+    const parsed = new Map();
     for (const call of calls) {
+      try { parsed.set(call, JSON.parse(call.args || '{}')); } catch { /* reported below */ }
+    }
+    const batchOf = new Map();
+    for (const batch of planBatches(calls, (call) => parsed.has(call)
+      && !mcp?.has(call.name) && READ_ONLY.has(call.name)
+      && tools.some((t) => t.function.name === call.name))) {
+      if (batch.length > 1) batchOf.set(batch[0], batch);
+    }
+    const handled = new Set();
+
+    for (const call of calls) {
+      if (handled.has(call)) continue;
+      const batch = batchOf.get(call);
+      if (batch) {
+        batch.forEach((b) => handled.add(b));
+        if (signal?.aborted) {
+          for (const b of batch) {
+            messages.push({ role: 'tool', tool_call_id: b.id, content: 'error: interrupted by user' });
+          }
+          continue;
+        }
+        const at = Number.isFinite(maxSteps) ? `${step}/${maxSteps}` : `${step}`;
+        // Labels first and results last, both in call order, so the screen reads
+        // as it would have run one by one. No liveLine: it rewrites the current
+        // line, and several of them would fight over it.
+        for (const b of batch) {
+          out(`${c.grey(`  ${at}`)} ${c.blue(`⚙ ${describe(b.name, parsed.get(b))}`)}`);
+        }
+        const results = await runConcurrently(batch, (b) => runTool(b.name, parsed.get(b)));
+        for (const [i, b] of batch.entries()) {
+          const result = await maybeDistill(results[i], {
+            model, signal, out, command: describe(b.name, parsed.get(b)),
+          });
+          if (result.startsWith('error:')) toolResultLines(result).forEach((l) => out(l));
+          else out(c.grey(`  ✓ ${result.split('\n').length} lines`));
+          messages.push({ role: 'tool', tool_call_id: b.id, content: result });
+        }
+        continue;
+      }
       if (signal?.aborted) {
         messages.push({ role: 'tool', tool_call_id: call.id, content: 'error: interrupted by user' });
         continue;

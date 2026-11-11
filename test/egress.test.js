@@ -84,8 +84,12 @@ test('child processes are only spawned by the tool layer', () => {
   // process that outlives the command that submitted it. That door is not a
   // detail of the feature, it is the feature: a caller that had to hold the
   // process open for the whole run is the shape rescue mode exists to replace.
+  //
+  // hooks.js is here because a hook is a command the user wrote in their own
+  // config file and asked to run around a tool call; it is the whole feature,
+  // and it runs only after the approval prompt.
   assert.deepEqual(spawners.sort(),
-    ['context.js', 'mcp.js', 'rescue.js', 'setup.js', 'tools.js', 'update.js'].sort(),
+    ['context.js', 'hooks.js', 'mcp.js', 'rescue.js', 'setup.js', 'tools.js', 'update.js'].sort(),
     'a new file gained the ability to run commands');
 });
 

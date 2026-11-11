@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { parseHooks } from './hooks.js';
 
 // KRONK_CONFIG exists so tests never touch the real file. Everything here is
 // read at module load, so a test that sets it must `await import()` rather than
@@ -127,6 +128,10 @@ export const config = {
   // `KRONK_TERM_STATUS=0` or `false` turns it off, as does `termStatus: false`.
   termStatus: !/^(0|false|off)$/i.test(process.env.KRONK_TERM_STATUS ?? String(file.termStatus ?? 'true')),
   termBellSeconds: Number(process.env.KRONK_TERM_BELL_AFTER ?? file.termBellSeconds ?? 10),
+  // User commands run before and after a tool call — src/hooks.js. Config
+  // file only: a command line in an environment variable is too easy to
+  // inherit by accident into a shell that was never meant to run it.
+  hooks: parseHooks(file.hooks),
   lastUsed: 0,
   // The startup scan of the working directory, kept so a sub-agent starts
   // knowing what the project is instead of spending its first two steps on it.

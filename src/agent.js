@@ -10,6 +10,7 @@ import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { markdownStream } from './markdown.js';
 import { compact, isOverflow, report } from './compact.js';
 import { maybeDistill } from './distill.js';
+import { runPre, runPost } from './hooks.js';
 import {
   carryChecklist, clearPlan, openItems, outstandingLines, planLines, pushNudge,
 } from './plan.js';
@@ -308,11 +309,28 @@ export async function runTurn({
         for (const b of batch) {
           out(`${c.grey(`  ${at}`)} ${c.blue(`⚙ ${describe(b.name, parsed.get(b))}`)}`);
         }
-        const results = await runConcurrently(batch, (b) => runTool(b.name, parsed.get(b)));
+        // Hooks run per call, as on the serial path: a pre-hook that blocks
+        // read_file must not be bypassed just because the call was batched.
+        // Warnings are collected and printed in call order with the results.
+        const ran = await runConcurrently(batch, async (b) => {
+          const bArgs = parsed.get(b);
+          const pre = await runPre(config.hooks, b.name, bArgs);
+          if (pre.blocked) return { pre, result: `error: blocked by a pre-tool hook: ${pre.message}` };
+          const result = await runTool(b.name, bArgs);
+          return { pre, result, post: await runPost(config.hooks, b.name, bArgs, result) };
+        });
         for (const [i, b] of batch.entries()) {
-          const result = await maybeDistill(results[i], {
-            model, signal, out, command: describe(b.name, parsed.get(b)),
-          });
+          const { pre, post } = ran[i];
+          pre.warnings.forEach((w) => out(c.yellow(`  ${w} (pre-hook for ${b.name})`)));
+          post?.warnings.forEach((w) => out(c.yellow(`  ${w} (post-hook for ${b.name})`)));
+          let result = ran[i].result;
+          if (pre.blocked) out(c.red('  ✗ blocked by hook'));
+          else {
+            result = await maybeDistill(result, {
+              model, signal, out, command: describe(b.name, parsed.get(b)),
+            });
+            if (post.note) result = `${result}\n${post.note}`;
+          }
           if (result.startsWith('error:')) toolResultLines(result).forEach((l) => out(l));
           else out(c.grey(`  ✓ ${result.split('\n').length} lines`));
           messages.push({ role: 'tool', tool_call_id: b.id, content: result });
@@ -396,6 +414,17 @@ export async function runTurn({
         }
       }
 
+      // After approval, never before: a hook can refuse a call but cannot
+      // approve one. Sub-agents run through this same loop, so they are covered.
+      const pre = await runPre(config.hooks, call.name, args);
+      pre.warnings.forEach((w) => out(c.yellow(`  ${w} (pre-hook for ${call.name})`)));
+      if (pre.blocked) {
+        out(c.red('  ✗ blocked by hook'));
+        messages.push({ role: 'tool', tool_call_id: call.id,
+          content: `error: blocked by a pre-tool hook: ${pre.message}` });
+        continue;
+      }
+
       let result;
       if (isTask) {
         // No `liveLine` around this one. It rewrites the current line every
@@ -426,11 +455,15 @@ export async function runTurn({
       // second model call to paraphrase our own text would be pure waste.
       // A sub-agent's report is already the distillation of everything it
       // read; paying a second model call to summarise a summary is waste.
+      const post = await runPost(config.hooks, call.name, args, result);
+      post.warnings.forEach((w) => out(c.yellow(`  ${w} (post-hook for ${call.name})`)));
       if (call.name !== 'set_plan' && !isTask) {
         result = await maybeDistill(result, {
           model, signal, out, command: args.cmd ?? describe(call.name, args),
         });
       }
+      // After distilling, so a short note is never summarised away.
+      if (post.note) result = `${result}\n${post.note}`;
       const failed = result.startsWith('error:');
       if (failed) toolResultLines(result).forEach((l) => out(l));
       else if (call.name === 'set_plan') planLines().forEach((l) => out(l));

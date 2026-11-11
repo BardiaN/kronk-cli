@@ -312,6 +312,10 @@ export function applyEdit(text, oldStr, newStr, replaceAll = false) {
   // Checked because split().join(undefined) would insert a literal ",".
   if (typeof newStr !== 'string') return { error: 'new_string must be a string (use an empty string to delete the matched text)' };
   if (oldStr === newStr) return { error: 'old_string and new_string are identical, so nothing would change' };
+  // A CRLF file read by the model and quoted back with LF endings would never
+  // match verbatim. Match with `\r?\n` per newline and write the replacement
+  // in the endings of what it replaced, so untouched lines are never rewritten.
+  if (text.includes('\r')) return applyEditEol(text, oldStr, newStr, replaceAll);
   const count = text.split(oldStr).length - 1;
   if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
   if (count > 1 && !replaceAll) {
@@ -319,6 +323,24 @@ export function applyEdit(text, oldStr, newStr, replaceAll = false) {
   }
   // split/join rather than String.replace, so `$&` in new_string stays literal.
   return { text: text.split(oldStr).join(newStr), count };
+}
+
+function applyEditEol(text, oldStr, newStr, replaceAll) {
+  const pattern = oldStr.replace(/\r\n/g, '\n').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\n/g, '\r?\n');
+  const re = new RegExp(pattern, 'g');
+  const count = [...text.matchAll(re)].length;
+  if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
+  if (count > 1 && !replaceAll) {
+    return { error: `old_string matches ${count} places; add surrounding lines to make it unique, or set replace_all to true` };
+  }
+  const lf = newStr.replace(/\r\n/g, '\n');
+  // No newline in the match: follow the file, but only when it is all CRLF.
+  const fileCrlf = /\r\n/.test(text) && !/(^|[^\r])\n/.test(text);
+  const out = text.replace(re, (m) => {
+    const crlf = m.includes('\n') ? m.includes('\r\n') : fileCrlf;
+    return crlf ? lf.replace(/\n/g, '\r\n') : lf;
+  });
+  return { text: out, count };
 }
 
 export function preview(name, args) {

@@ -534,6 +534,37 @@ overrides where they live, same idea as `KRONK_TASK_LOG_DIR`.
 
 ---
 
+## Resuming a session
+
+The REPL's conversation is saved after every completed turn, so closing the terminal does not
+lose it. Sessions are kept per launch directory:
+
+```bash
+kronk-cli --sessions            # what is saved for this directory, newest first
+kronk-cli --resume              # continue the most recent one (also -r)
+kronk-cli --resume <id>         # a specific one; an unambiguous prefix is enough
+```
+
+```
+› /resume                       # the same list, from inside the REPL
+›  1  mq4x2k1a-3fa9c1  2026-11-11 14:05 · 6 turns · qwen3.6-35b  refactor the argv parser
+› /resume 1                     # replace this conversation with that one
+```
+
+On resume the messages come back, but the system prompt and project primer are the ones this
+launch just built, so a resumed session sees the current `AGENTS.md` and the current mode. A
+one-line summary (date, turns, model) is printed; the model in use is not changed, so `/model`
+if you want the one it ran on. A resumed session keeps writing to its own file.
+
+Each directory keeps its 20 most recent sessions; older ones are deleted as new ones are saved.
+They are stored like the sub-agent transcripts and rescue records — a directory only you can
+open, files readable only by you, and a directory owned by another user is refused. By default
+that is under the temp dir, which the OS may clear; set `KRONK_SESSION_DIR` (or `sessionDir` in
+the config file) to keep them across reboots. `--resume` applies to the REPL, not to a one-shot
+prompt.
+
+---
+
 ## Startup: the model is loaded before you type
 
 Kronk has no load command. It lists a model in `GET /v1/models` as soon as the
@@ -738,6 +769,8 @@ same way this run did.
 | `--no-warm` | off | Don't preload the model at startup; let the first prompt trigger the load |
 | `--mcp [names]` | off | Attach MCP servers — bare for all, or a comma list |
 | `--mcp-list` | — | Show configured MCP servers and their tools, then exit |
+| `-r`, `--resume [id]` | — | Continue the most recent session started in this directory, or the one with that id — see [Resuming a session](#resuming-a-session) |
+| `--sessions` | — | List the saved sessions for this directory, then exit |
 | `-a`, `--auto` | off | Autonomous: auto-approve tools **and** run until the task is done. Implies `--yes` |
 | `-y`, `--yes` | off | Auto-approve `edit_file`, `write_file` and `bash` without the autonomous prompt |
 | `--deny` | off | Refuse every tool call that would show an approval prompt, and tell the model its settings deny that tool so it can try another way. Cannot be combined with `-y` or `-a` (exit 2) |
@@ -866,6 +899,7 @@ image as `[image: name.png]`, never as its base64.
 | `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
 | `/compact` | replace the conversation with a summary of itself |
 | `/clear` | reset the conversation, keep the model; stops background jobs |
+| `/resume [n]` | list this directory's saved sessions; with `n`, replace the conversation with that one |
 | `/exit`, `/quit` | quit |
 
 ### Presets
@@ -916,6 +950,7 @@ with the repository, so read it as you would any other file you cloned.
 | `KRONK_TASK_LOG` | `true` | `false` stops writing sub-agent transcripts, and `/tasks` says so |
 | `KRONK_TASK_LOG_DIR` | the temp dir | Where transcripts are written |
 | `KRONK_RESCUE_DIR` | the temp dir | Where `kronk-cli rescue` keeps its job records — see [`kronk-cli rescue`](#kronk-cli-rescue) |
+| `KRONK_SESSION_DIR` | the temp dir | Where REPL sessions are saved for `--resume` — see [Resuming a session](#resuming-a-session) |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |
@@ -1829,6 +1864,7 @@ previous prompt prefix — watch `cached` climb in the usage line.
 | `src/ui.js` | colour, spinner, usage formatting |
 | `src/theme.js` | which palette to print in, and how the background is worked out |
 | `src/markdown.js` | rendering the model's markdown for the terminal, as it streams |
+| `src/session.js` | saving and listing REPL sessions for `--resume` |
 | `src/prompt.js` | the line reader: opened on the first question, keeping what was typed before it |
 
 ---

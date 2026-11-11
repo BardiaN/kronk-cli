@@ -102,6 +102,8 @@ export const config = {
   // src/tasklog.js's sweep() and cleanup(), and a rescue record has to
   // survive both, so it lives somewhere neither of them has ever heard of.
   rescueDir: process.env.KRONK_RESCUE_DIR ?? file.rescueDir ?? null,
+  // Where REPL sessions are saved for --resume — src/session.js.
+  sessionDir: process.env.KRONK_SESSION_DIR ?? file.sessionDir ?? null,
   // Kronk's per-model runtime settings. `setup` is the only thing that writes
   // it; the override exists so tests never go near the real one.
   modelConfigPath: process.env.KRONK_MODEL_CONFIG ?? file.modelConfigPath ?? MODEL_CONFIG,

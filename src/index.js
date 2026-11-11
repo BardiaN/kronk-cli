@@ -28,6 +28,10 @@ import {
   loadPresets, resolveInvocation, listPresets, commandWord, userPromptsDir, projectPromptsDir,
 } from './presets.js';
 import { termStatus } from './termstatus.js';
+import {
+  newSessionId, findSession, listSessions, listLines, summary, trySave, storable,
+  restoreMessages, hasConversation, countTurns,
+} from './session.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
@@ -74,6 +78,9 @@ if (args.help) {
         --no-warm       don't preload the model; let the first prompt trigger it
         --mcp [names]   attach MCP servers; bare for all, or a comma list
         --mcp-list      show configured MCP servers and their tools, then exit
+    -r, --resume [id]   continue the most recent session started in this
+                        directory, or the one with that id (see --sessions)
+        --sessions      list the saved sessions for this directory, then exit
     -m, --model <id>    model to use; substring is enough, /AGENT profiles win
                         default: ${DEFAULT_MODEL}
     -a, --auto          autonomous: approve tools automatically, finish the task
@@ -121,6 +128,8 @@ if (args.help) {
                         the long-turn bell (default on, TTY only)
     KRONK_TERM_BELL_AFTER
                         seconds a turn must run before it rings (default 10)
+    KRONK_SESSION_DIR   where REPL sessions are saved for --resume
+                        (default: ~/.local/state/kronk-cli/sessions)
     KRONK_UPDATE_CHECK  false to never ask the package manager whether a
                         newer kronk-cli exists (default true)
 
@@ -377,6 +386,7 @@ const HELP = `
   ${c.bold('/context')}         how much of the context window is used
   ${c.bold('/theme [d|l]')}     dark or light palette, for when the terminal guessed wrong
   ${c.bold('/compact')}         replace the conversation with a summary of itself
+  ${c.bold('/resume [n]')}      list saved sessions for this directory; with n, load one
   ${c.bold('/clear')}           reset the conversation
   ${c.bold('/exit')}            quit
 `;
@@ -507,6 +517,17 @@ async function main() {
     return;
   }
 
+  if (args.sessions) {
+    const found = listSessions();
+    if (!found.length) console.log(c.grey('  no saved sessions for this directory'));
+    else {
+      console.log();
+      listLines(found).forEach((l) => console.log(`  ${l}`));
+      console.log(c.grey('\n  continue one with: kronk-cli --resume [id]\n'));
+    }
+    return;
+  }
+
   if (SHOW_MODELS) { await showModels(); return; }
   if (SHOW_MCP) { await showMcp(); process.exit(0); }
 
@@ -517,6 +538,11 @@ async function main() {
   const piped = await readStdin(inline ? 200 : 10_000);
   const oneShotPrompt = inline && piped ? `${inline}\n\n${piped}` : (inline || piped);
   if (oneShotPrompt) {
+    if (args.resume) {
+      console.error('\n  --resume continues an interactive session; drop the prompt, or drop --resume\n');
+      process.exitCode = 2;
+      return;
+    }
     // stdin has given us everything it is going to. When it is a pipe the
     // caller never closes — a script, an editor task, a CI step — the read
     // above stays pending and its handle would keep the process alive long
@@ -588,6 +614,40 @@ async function main() {
   // Images from /file wait here for the next message rather than becoming a
   // turn of their own: a picture with no question would just draw a reply.
   const pendingImages = [];
+
+  // One file per session, rewritten after each completed turn. A resumed
+  // session keeps writing to its own file rather than forking a new one.
+  let session = { id: newSessionId(), createdAt: new Date().toISOString() };
+  const persist = () => {
+    if (!hasConversation(messages)) return;
+    trySave({
+      ...session,
+      cwd: process.cwd(),
+      model: config.model,
+      updatedAt: new Date().toISOString(),
+      turns: countTurns(messages),
+      messages: storable(messages),
+    });
+  };
+  const loadSession = (s) => {
+    messages.splice(0, messages.length, ...restoreMessages(messages, s.messages));
+    session = { id: s.id, createdAt: s.createdAt };
+    config.lastUsed = 0;
+    console.log(c.grey(`  resumed ${s.id} · ${summary(s)}`));
+    if (s.model && s.model !== config.model) {
+      console.log(c.grey(`  it ran on ${s.model}; still using ${config.model} — /model to switch`));
+    }
+  };
+  if (args.resume) {
+    const s = findSession(process.cwd(), args.resumeId);
+    if (s) {
+      loadSession(s);
+    } else {
+      console.log(c.yellow(args.resumeId
+        ? `  no saved session "${args.resumeId}" for this directory — starting fresh`
+        : '  no saved session for this directory — starting fresh'));
+    }
+  }
   // The system prompt is the one record of which mode we are in — /auto rewrites
   // it — so both the status line and the turn read the answer from there.
   const isAuto = () => messages[0].content.startsWith(SYSTEM_AUTO);
@@ -661,6 +721,9 @@ async function main() {
       messages.length = 1;
       config.lastUsed = 0;
       killAllJobs();
+      // The cleared conversation is a new one; keeping the id would let the
+      // next save overwrite the session it just replaced.
+      session = { id: newSessionId(), createdAt: new Date().toISOString() };
       console.log(c.grey('  conversation cleared'));
       continue;
     }
@@ -720,6 +783,21 @@ async function main() {
       console.log(c.grey(`  ${theme()} palette`));
       continue;
     }
+    if (input === '/resume' || input.startsWith('/resume ')) {
+      const found = listSessions().filter((x) => x.id !== session.id);
+      const raw = input.slice(7).trim();
+      if (!raw) {
+        if (!found.length) { console.log(c.grey('  no other saved sessions for this directory')); continue; }
+        listLines(found).forEach((l) => console.log(`  ${l}`));
+        console.log(c.grey('  /resume <n> loads one, replacing this conversation'));
+        continue;
+      }
+      const hit = /^\d+$/.test(raw) ? found[Number(raw) - 1] : findSession(process.cwd(), raw);
+      if (!hit) { console.log(c.red(`  no session "${raw}" — /resume lists them`)); continue; }
+      persist();
+      loadSession(hit);
+      continue;
+    }
     if (input === '/models') { await showModels(); continue; }
     if (input === '/tasks' || input.startsWith('/tasks ')) {
       const raw = input.split(/\s+/)[1];
@@ -744,6 +822,7 @@ async function main() {
       if (res.failed) { console.log(c.red('  compaction produced nothing — conversation unchanged')); continue; }
       if (!res.skipped) messages.splice(0, messages.length, ...res.messages);
       console.log(report(res));
+      persist();
       continue;
     }
     if (input === '/context') {
@@ -821,6 +900,7 @@ async function main() {
     } finally {
       ac = null;
       term.ready();
+      persist();
     }
   }
 

@@ -15,6 +15,7 @@ import { resolveApprovalMode } from './approval.js';
  * "did you mean" suggestion read from it, so a new option cannot be understood
  * by one and unknown to the other.
  *
+ * kind: 'id' takes the next token only when it is shaped like (a prefix of) a session id.
  * kind: 'flag' takes nothing, 'value' requires the next token, 'optional' takes
  * the next token only when it does not look like an option.
  */
@@ -39,6 +40,8 @@ const SPECS = [
   { names: ['--mcp'], kind: 'optional', key: 'mcp' },
   { names: ['--role'], kind: 'value', key: 'role' },
   { names: ['--json'], kind: 'flag', key: 'json' },
+  { names: ['--sessions'], kind: 'flag', key: 'sessions' },
+  { names: ['-r', '--resume'], kind: 'id', key: 'resume' },
   // Internal: how `kronk-cli rescue` re-invokes itself as the detached
   // worker for one job id (src/rescue.js). Not documented in --help — it is
   // not a thing anyone types, only a thing the CLI passes to itself.
@@ -57,6 +60,13 @@ export const KNOWN = [...BY_NAME.keys()].sort();
  * too — it is the conventional stdin placeholder.
  */
 const OPTIONISH = /^-\S+$/;
+
+/**
+ * The id alphabet, so a prefix works as well as a whole id. A word of plain
+ * lowercase letters would match too; it is then looked up, and reported as
+ * not found, rather than silently read as a prompt.
+ */
+const SESSION_ID = /^[0-9a-z][0-9a-z-]*$/;
 
 const STEPS_WORDS = /^(0|off|none|inf|unlimited)$/i;
 
@@ -122,6 +132,8 @@ export function parseArgv(argv) {
     mcp: false, mcpNames: null,
     role: null,
     json: false,
+    sessions: false,
+    resume: false, resumeId: null,
     rescueWorker: null,
     words: [],
   };
@@ -143,6 +155,13 @@ export function parseArgv(argv) {
     if (spec.kind === 'flag') { out[spec.key] = true; continue; }
 
     const next = argv[i + 1];
+    // Takes the next token only when it is shaped like a session id, so
+    // `--resume "fix the bug"` still reads the words as the prompt.
+    if (spec.kind === 'id') {
+      out.resume = true;
+      if (next !== undefined && SESSION_ID.test(next)) { out.resumeId = next; i++; }
+      continue;
+    }
     if (spec.kind === 'optional') {
       out.mcp = true;
       if (next !== undefined && !next.startsWith('-')) {

@@ -88,6 +88,8 @@ test('loadImage enforces the root, the size cap and the magic bytes', async () =
     writeFileSync(join(dir, 'big.png'), Buffer.concat([PNG, Buffer.alloc(MAX_IMAGE_BYTES)]));
     await assert.rejects(loadImage('big.png'), /capped at 10 MB/);
 
+    await assert.rejects(loadImage('.'), /not a regular file/);
+
     await assert.rejects(loadImage('../outside.png'), /outside/);
   } finally {
     Object.assign(session, saved);

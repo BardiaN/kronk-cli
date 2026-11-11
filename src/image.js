@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { safe } from './tools.js';
 
@@ -37,11 +37,21 @@ export function imagePart(buf, mime, name) {
  */
 export async function loadImage(path) {
   const abs = safe(path);
-  const { size } = await stat(abs);
-  if (size > MAX_IMAGE_BYTES) {
-    throw new Error(`${path} is ${(size / 1048576).toFixed(1)} MB; images are capped at ${MAX_IMAGE_BYTES / 1048576} MB`);
+  // One handle for the size check and the read: a stat followed by a separate
+  // readFile lets the file change between the two.
+  const fh = await open(abs, 'r');
+  let buf;
+  try {
+    const st = await fh.stat();
+    const { size } = st;
+    if (!st.isFile()) throw new Error(`${path} is not a regular file`);
+    if (size > MAX_IMAGE_BYTES) {
+      throw new Error(`${path} is ${(size / 1048576).toFixed(1)} MB; images are capped at ${MAX_IMAGE_BYTES / 1048576} MB`);
+    }
+    buf = await fh.readFile();
+  } finally {
+    await fh.close();
   }
-  const buf = await readFile(abs);
   const mime = sniffMime(buf);
   if (!mime) throw new Error(`${path} does not look like a PNG, JPEG, WebP or GIF`);
   return { part: imagePart(buf, mime, basename(path)), mime, bytes: buf.length };

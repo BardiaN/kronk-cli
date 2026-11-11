@@ -60,7 +60,7 @@ export const AGENTS = {
   },
   code: {
     use: 'making a change, running a build or a test suite, reproducing a failure',
-    tools: [...READ_ONLY, 'edit_file', 'write_file', 'bash'],
+    tools: [...READ_ONLY, 'edit_file', 'write_file', 'bash', 'bash_output'],
     rules: '- You can also edit and write files and run commands. Use edit_file to change an existing file and write_file only for a new one. The user is still asked before each one, and a refusal is an answer: report it, do not look for a way around it.\n'
       + '- After you write code, RUN it and fix what breaks. Never report that something works unless you have executed it and seen the output.',
   },

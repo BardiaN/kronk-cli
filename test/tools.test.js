@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clip, safe, session, runBash, runTool, killAllJobs, backgroundJobs, readJob, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
+import { clip, safe, session, runBash, runTool, killAllJobs, backgroundJobs, readJob, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval, markFilter } from '../src/tools.js';
 
 // realpath, because macOS maps /var onto /private/var and the shell reports the latter
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-tools-')));
@@ -83,6 +83,27 @@ test('a timeout moves the command to the background instead of killing it', asyn
   killAllJobs();
   assert.equal(backgroundJobs(), 0);
   assert.match(await runTool('bash_output', { id }), /no background job/);
+});
+
+test('live progress never shows the internal cwd marker', async () => {
+  const seen = [];
+  const out = await runBash('echo hello', { onProgress: (p) => seen.push(p) });
+  assert.equal(out.trim(), 'hello');
+  assert.ok(seen.length >= 1);
+  for (const p of seen) assert.ok(!p.lastLine.includes('__KRONK_CWD__'), `leaked: ${p.lastLine}`);
+  assert.equal(seen.at(-1).lastLine, 'hello');
+  assert.equal(seen.at(-1).bytes, 'hello\n'.length, 'the marker is not counted in the size estimate');
+});
+
+test('bash_output of a job that has finished does not show the cwd marker', async () => {
+  const out = await runBash('echo started; sleep 0.6; echo finished', { timeoutMs: 200 });
+  assert.ok(!out.includes('__KRONK_CWD__'));
+  const id = out.match(/job (bg\d+)/)[1];
+  await new Promise((r) => setTimeout(r, 1200));
+  const read = await runTool('bash_output', { id });
+  assert.match(read, /exited with code 0/);
+  assert.match(read, /finished/);
+  assert.ok(!read.includes('__KRONK_CWD__'), read);
 });
 
 test('built-in approval gating covers exactly the mutating tools', () => {
@@ -324,4 +345,24 @@ test('more than 8 unread finished jobs discards the oldest with a clear message'
   assert.match(await runTool('bash_output', { id: ids[0] }), /finished and discarded/);
   assert.match(await runTool('bash_output', { id: ids[9] }), /exited with code 0/);
   killAllJobs();
+});
+
+test('the marker is held back however the pipe splits it, even a lone newline', () => {
+  // What the trap appends after a command that printed "hello\n": the pipe can
+  // cut this anywhere, including into a chunk that is only the leading "\n".
+  const stream = 'hello\n\n__KRONK_CWD__/tmp/project';
+  for (let i = 0; i <= stream.length; i++) {
+    for (let j = i; j <= stream.length; j++) {
+      const f = markFilter();
+      const shown = [stream.slice(0, i), stream.slice(i, j), stream.slice(j)].map((c) => f.push(c)).join('');
+      assert.equal(shown, 'hello\n', `split at ${i},${j}`);
+    }
+  }
+});
+
+test('a tail that only looked like the marker is released with the next chunk', () => {
+  const f = markFilter();
+  assert.equal(f.push('a\n__KRO'), 'a');
+  assert.equal(f.push('NK is not it\n'), '\n__KRONK is not it');
+  assert.equal(f.push('\n__KRONK_CWD__/x'), '\n');
 });

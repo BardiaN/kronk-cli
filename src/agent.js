@@ -191,6 +191,11 @@ export async function runTurn({
       }
     } catch (e) {
       if (sp) { sp.stop(); sp = null; }
+      // A failed request can still have spent tokens (Kronk sends the usage
+      // with the error). Count them, or the status line and /context run low.
+      if (totalUsage && !depth) {
+        config.lastUsed = (totalUsage.prompt_tokens ?? 0) + (totalUsage.completion_tokens ?? 0);
+      }
       if (isOverflow(e) && !compacted) {
         compacted = true;
         out(c.yellow('\n  context full — compacting and retrying'));

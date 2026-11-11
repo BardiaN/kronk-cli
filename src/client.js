@@ -1,11 +1,14 @@
 import { config, headers } from './config.js';
-import { createSseParser, accumulateToolCalls } from './sse.js';
+import { createSseParser, accumulateToolCalls, errorUsage, errorFrame } from './sse.js';
 
 async function req(path, init = {}) {
   const res = await fetch(`${config.baseUrl}${path}`, { headers: headers(), ...init });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`${res.status} ${path} — ${body.slice(0, 400)}`);
+    const err = new Error(`${res.status} ${path} — ${body.slice(0, 400)}`);
+    // Kept off the message so overflow detection and display are unchanged.
+    try { err.usage = errorUsage(JSON.parse(body)); } catch { err.usage = null; }
+    throw err;
   }
   return res;
 }
@@ -161,26 +164,34 @@ export async function tokenize(model, input) {
  * Stream a chat completion. Yields:
  *   {type:'text',      value}
  *   {type:'reasoning', value}
- *   {type:'usage',     value}
+ *   {type:'usage',     value}   (also ahead of a thrown error that carries usage)
  *   {type:'done',      calls, finish}
  */
 export async function* streamChat({
   model, messages, tools, signal, maxTokens, noThink, preserveThinking,
 }) {
-  const res = await req('/chat/completions', {
-    method: 'POST',
-    signal,
-    body: JSON.stringify({
-      model,
-      messages,
-      ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
-      stream: true,
-      stream_options: { include_usage: true },
-      max_completion_tokens: maxTokens,
-      ...(noThink ? { enable_thinking: false } : {}),
-      ...(preserveThinking ? { chat_template_kwargs: { preserve_thinking: true } } : {}),
-    }),
-  });
+  let res;
+  try {
+    res = await req('/chat/completions', {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+        stream: true,
+        stream_options: { include_usage: true },
+        max_completion_tokens: maxTokens,
+        ...(noThink ? { enable_thinking: false } : {}),
+        ...(preserveThinking ? { chat_template_kwargs: { preserve_thinking: true } } : {}),
+      }),
+    });
+  } catch (e) {
+    // Usage first, error second: the caller accounts for the tokens, then
+    // handles the failure as it always did.
+    if (e.usage) yield { type: 'usage', value: e.usage };
+    throw e;
+  }
 
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -199,6 +210,11 @@ export async function* streamChat({
       try { chunk = JSON.parse(payload); } catch { continue; }
 
       if (chunk.usage) yield { type: 'usage', value: chunk.usage };
+
+      // After the usage yield above, so a failure frame's usage is reported
+      // before the throw.
+      const failure = errorFrame(chunk);
+      if (failure) throw failure;
 
       const choice = chunk.choices?.[0];
       if (!choice) continue;

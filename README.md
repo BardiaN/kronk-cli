@@ -771,7 +771,10 @@ Above every prompt, reflecting current state rather than what you launched with:
 Model, active modes, attached MCP servers, any step cap, and the context meter — grey under 70%,
 yellow past 70%, red past 90%. Toggling `/auto`, `/think` or `/steps` updates it immediately.
 
-The per-turn usage line still prints after each response; this one is the running picture.
+The per-turn usage line still prints after each response; this one is the running picture. A
+request that fails still counts: Kronk 1.32.8 and later send the tokens spent so far with the
+error (an HTTP error body or an SSE error frame), and the meter and `/context` take them in.
+Older servers send none, and the error is reported as before.
 
 ### It follows your terminal's background
 

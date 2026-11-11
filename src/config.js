@@ -44,6 +44,10 @@ export const config = {
   // Set --steps / KRONK_MAX_STEPS to opt into a cap.
   maxSteps: Number(process.env.KRONK_MAX_STEPS ?? file.maxSteps ?? Infinity),
   showThinking: (process.env.KRONK_THINKING ?? String(file.showThinking ?? 'true')) !== 'false',
+  // Refuse every call that would show an approval prompt, and tell the model
+  // so — see src/approval.js. A default, not a flag: an explicit --yes/--auto
+  // overrides it for that run.
+  denyUnapproved: ['1', 'true'].includes(process.env.KRONK_DENY_UNAPPROVED ?? String(file.denyUnapproved ?? '')),
   noThink: (process.env.KRONK_NO_THINK ?? String(file.noThink ?? '')) === '1',
   // The chat template drops earlier <think> blocks once a newer user message
   // arrives, which rewrites the prefix and throws the whole session cache away.

@@ -289,3 +289,9 @@ test('prose and ordinary prompts are unaffected, piped stdin included', async ()
   assert.equal(c.code, 0);
   assert.equal(only.prompt(), 'hi');
 });
+
+test('--deny with --yes exits 2 before anything reaches the network', async () => {
+  const r = await cli(['--deny', '--yes', 'x']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--deny cannot be combined with --yes/);
+});

@@ -1,4 +1,5 @@
 import { streamChat } from './client.js';
+import { DENIED_BY_SETTINGS, deniedBySettingsMessage } from './approval.js';
 import {
   TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval,
   grantsNeeded, rememberGrants, declineGrants, credentialMatches,
@@ -350,6 +351,11 @@ export async function runTurn({
         const body = preview(call.name, args);
         if (body) out(body.split('\n').map((l) => `    ${l}`).join('\n'));
         const ok = await approve(call.name, args);
+        if (ok === DENIED_BY_SETTINGS) {
+          out(c.red('  ✗ denied by settings (--deny)'));
+          messages.push({ role: 'tool', tool_call_id: call.id, content: deniedBySettingsMessage(call.name) });
+          continue;
+        }
         if (!ok) {
           out(c.red('  ✗ denied'));
           messages.push({ role: 'tool', tool_call_id: call.id,

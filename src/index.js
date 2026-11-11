@@ -15,6 +15,7 @@ import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox } from './tools.js';
 import { parseArgv } from './argv.js';
+import { resolveApprovalMode, decideApproval } from './approval.js';
 import { deferredPrompt } from './prompt.js';
 import { AGENTS, setServedModels } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
@@ -49,7 +50,7 @@ if (args.help) {
                                     pull the model, write its /AGENT profile to
                                     ~/.kronk/models/model_config.yaml, restart Kronk
 
-    kronk-cli rescue "<prompt>" [--role explore|code] [--model <id>] [-y|-a] [--steps <n>] [--json]
+    kronk-cli rescue "<prompt>" [--role explore|code] [--model <id>] [-y|-a|--deny] [--steps <n>] [--json]
                                     submit a self-contained task; runs detached,
                                     prints a job id and exits immediately
     kronk-cli rescue status <id> [--json]
@@ -76,6 +77,8 @@ if (args.help) {
                         default: ${DEFAULT_MODEL}
     -a, --auto          autonomous: approve tools automatically, finish the task
     -y, --yes           approve tools automatically (no autonomous prompt)
+        --deny          refuse every tool that needs approval, and tell the model;
+                        cannot be combined with -y or -a
         --no-think      disable the model's reasoning pass (faster)
         --no-subagents  remove the task tool; no delegation
         --no-term-status
@@ -94,6 +97,9 @@ if (args.help) {
     KRONK_MAX_TOKENS    output cap per response; overrides the cap the
                         chosen model's own profile sets (8192 if it sets none)
     KRONK_MAX_STEPS     cap on tool calls per task (default unlimited)
+    KRONK_DENY_UNAPPROVED
+                        set to 1 to refuse tools that need approval (as --deny);
+                        an explicit -y or -a overrides it
     KRONK_NO_THINK      set to 1 to disable reasoning
     KRONK_PRESERVE_THINKING
                         false to stop pinning earlier think blocks in the
@@ -143,6 +149,11 @@ if (args.version) {
 // --auto: run the whole task unattended (implies --yes)
 const AUTO = args.auto;
 const AUTO_YES = args.yes || AUTO;
+// ask | allow | deny — src/approval.js. `deny` refuses a gated call at once and
+// tells the model why, so an unattended run carries on instead of stalling.
+const APPROVAL = resolveApprovalMode({
+  yes: args.yes, auto: args.auto, deny: args.deny, denyDefault: config.denyUnapproved,
+}).mode;
 
 // Off for a pipe, TERM=dumb, the flag, the env var or the config key. Every
 // exit path restores the user's title and clears the tab progress: 'exit'
@@ -433,7 +444,8 @@ async function oneShot(prompt) {
   }
 
   const approve = async (name) => {
-    if (AUTO_YES) return true;
+    const verdict = decideApproval(APPROVAL);
+    if (verdict !== null) return verdict;
     console.log(c.yellow(`  ✗ ${name} needs approval; re-run with --yes to allow it`));
     return false;
   };
@@ -578,7 +590,8 @@ async function main() {
 
   let autoApprove = AUTO_YES;
   const approve = async (name) => {
-    if (autoApprove) return true;
+    const verdict = decideApproval(autoApprove ? 'allow' : APPROVAL);
+    if (verdict !== null) return verdict;
     term.approval();
     let a;
     try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase(); }
@@ -590,6 +603,7 @@ async function main() {
   // flag you had to know about before you started. `always` writes the path to
   // ~/.kronk-cli.json so the next session does not ask.
   const grant = async (binary, paths) => {
+    if (APPROVAL === 'deny' && !autoApprove) return 'no';   // no prompt in this mode, for this either
     if (autoApprove) {
       console.error(c.grey(`  granted read-only ${paths.map(tilde).join(', ')} to ${binary} (--yes)`));
       return 'yes';
@@ -654,6 +668,10 @@ async function main() {
       continue;
     }
     if (input === '/auto') {
+      if (APPROVAL === 'deny') {
+        console.log(c.grey('  autonomous mode is off the table: --deny / denyUnapproved refuses every tool that needs approval'));
+        continue;
+      }
       const now = !isAuto();
       const primer = messages[0].content.slice((isAuto() ? SYSTEM_AUTO : SYSTEM).length);
       messages[0] = { role: 'system', content: (now ? SYSTEM_AUTO : SYSTEM) + primer };

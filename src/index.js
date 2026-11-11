@@ -13,6 +13,7 @@ import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
 import { resolveFileArg, classifyBytes } from './filearg.js';
+import { mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage } from './fileref.js';
 import { loadImage, buildContent, textOf, hasImage } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
@@ -855,9 +856,28 @@ async function main() {
         + `${config.maxTokensExplicit ? ' (yours)' : ' (from its profile)'}`));
       continue;
     }
-    if (input.startsWith('/file ')) {
+    if (input === '/file') { console.log(c.grey('  usage: /file <path> — also works inside a sentence: in this /file "a b.png" what is it?')); continue; }
+    // `/file` anywhere in the line, any number of times. A line that is only
+    // one reference keeps its old meaning: attach, then wait for the question.
+    let inlined = null;
+    let inlineImages = [];
+    const parsed = mentionsFile(input) ? await parseFileRefs(input, resolves) : null;
+    if (parsed && !parsed.refs.length) inlined = parsed.segments.map((s) => s.text).join('');
+    else if (parsed && !isBareRef(parsed)) {
+      const built = await buildFileMessage(parsed, { load: loadImage, read: readFile });
+      built.notes.forEach((n) => console.log(c.grey(`  ${n}`)));
+      if (built.errors) {
+        built.errors.forEach((e) => console.log(c.red(`  ${e}`)));
+        console.log(c.grey('  nothing was sent; fix the path and retry. To type a literal /file, write \\/file'));
+        continue;
+      }
+      built.contexts.forEach((body) => messages.push({ role: 'user', content: body }));
+      inlined = built.text;
+      inlineImages = built.images;
+    }
+    if (parsed?.refs.length && isBareRef(parsed)) {
       try {
-        const { path, note } = await resolveFileArg(input.slice(6));
+        const { path, note } = await resolveFileArg(parsed.refs[0]);
         if (note) console.log(c.grey(`  ${note}`));
         const img = await loadImage(path, { optional: true });
         if (img) {
@@ -883,10 +903,10 @@ async function main() {
       continue;
     }
     // After every built-in, so a preset can never take a command's name.
-    const expanded = resolveInvocation(input, presets);
-    if (input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
+    const expanded = inlined ?? resolveInvocation(input, presets);
+    if (inlined === null && input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
 
-    const sent = pendingImages.splice(0);
+    const sent = [...pendingImages.splice(0), ...inlineImages];
     messages.push({ role: 'user', content: buildContent(expanded ?? input, sent) });
     ac = new AbortController();
     term.working();

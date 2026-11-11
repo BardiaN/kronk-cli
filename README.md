@@ -897,7 +897,17 @@ AM/PM; a typed plain space matches it. Each guess is used only when exactly one 
 `/file` says which it used. A path that is not found is reported with the absolute path tried,
 the launch folder relative paths resolve against, and a same-named file one folder down
 (`Desktop/...`) as a suggestion only. A file that is neither an image nor UTF-8 text is refused
-rather than pasted into the conversation. Every path must stay inside the launch root. It needs a vision model
+rather than pasted into the conversation. Every path must stay inside the launch root.
+
+`/file` also works anywhere in a line, any number of times:
+`in this /file "Screenshot 2026-11-03 at 19.51.21" what do you see?`. The argument is a quoted
+string (`\"` inside double quotes is a quote) or, unquoted, the longest run of up to eight
+following words that names a file (`/file my notes.txt explain it` works when `my notes.txt`
+exists). Images ride with that message, text files are added as context, and the prompt the
+model reads has each reference replaced by `[image: name]` or `[file: name]`. If any reference
+fails, the errors are printed and nothing is sent. A line that is only `/file <path>` still just
+attaches and waits for your next message. To type a literal `/file`, write `\/file`. Lines typed
+while a task is running (steering) are sent as plain text; `/file` is not expanded in them. It needs a vision model
 (one Kronk serves with a multimodal projector); kronk-cli sends the image regardless and
 prints a note if Kronk returns an error.
 
@@ -918,7 +928,7 @@ instead — see [Steering a running task](#steering-a-running-task).
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
 | `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
-| `/file <path>` | add a file to the conversation as context; an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension |
+| `/file <path>` | add a file to the conversation as context (also usable inside a sentence); an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |

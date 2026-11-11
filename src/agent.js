@@ -455,6 +455,7 @@ export async function runTurn({
           result = isMcp
             ? await mcp.call(call.name, args)
             : await runTool(call.name, args, {
+                signal,
                 onProgress: (info) => live.update({ ...info, window }),
               });
         } finally {

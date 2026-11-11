@@ -17,6 +17,7 @@ import {
 } from './plan.js';
 import { runTask, taskTools } from './subagent.js';
 import { READ_ONLY, planBatches, runConcurrently } from './batch.js';
+import { drainSteering } from './steer.js';
 
 export const SYSTEM = `You are kronk-cli, a terse coding assistant running fully offline on the user's machine.
 
@@ -106,6 +107,12 @@ export async function runTurn({
   // and the round that ends it may be a throw or a step cap rather than a
   // return, so it has to be written as it happens.
   onStep = null,
+  // Lines the user typed while this turn ran (src/steer.js). Emptied into the
+  // transcript between rounds; whatever is left when the turn ends is the
+  // caller's. Only the REPL passes one, so a sub-agent or one-shot never steers.
+  steering = null,
+  // Called with the number of lines just injected, so the caller can say so.
+  onSteer = null,
   // The window and the output cap belong to `model`, not to the session: a
   // sub-agent may be running on a different model with a different profile.
   window = config.contextWindow, maxTokens = config.maxTokens,
@@ -475,6 +482,12 @@ export async function runTurn({
     // On the last tool result rather than in a message of its own, so the
     // round only ever adds to the prompt. Nothing already sent is touched.
     if (usePlan) carryChecklist(messages);
+    // After the checklist, which belongs on the last tool result, and before
+    // `onStep`, so the recorded transcript is the one the next request sends.
+    if (steering?.length && !signal?.aborted) {
+      const n = drainSteering(messages, steering);
+      if (n) onSteer?.(n);
+    }
     onStep?.(messages, step);
     // loop: the model now sees the tool output
   }

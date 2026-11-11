@@ -795,6 +795,16 @@ piped stdin, the two are concatenated.
 
 `Ctrl-C` aborts the in-flight response and the tool loop without killing the session.
 
+### Steering a running task
+
+In the interactive REPL you do not have to wait for a turn to finish, or abort it, to change its
+course. Type a line while the model is working and press Enter: it is echoed as `queued`, and
+sent as a user message once the current tool call(s) finish, before the next request to the
+model — so the task carries on with your note instead of starting over. If the turn ends before
+that point, the line becomes your next prompt. A question the agent asks you (an approval, a
+credential-read grant) is answered by what you type, never queued. Lines starting with `/` are
+commands and wait for the prompt. Piped and one-shot runs have nobody typing and are unchanged.
+
 ---
 
 ## The status line
@@ -883,6 +893,9 @@ prints a note if Kronk returns an error. `/context` and `/compact` count and sum
 image as `[image: name.png]`, never as its base64.
 
 ## REPL commands
+
+Anything that is not a command is a prompt; typed while a task is running, it steers that task
+instead — see [Steering a running task](#steering-a-running-task).
 
 | Command | |
 |---|---|

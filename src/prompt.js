@@ -31,13 +31,16 @@ export function deferredPrompt({ input, output, historySize = 500, onSigint } = 
   let closed = false;
   let waiting = null;              // the question currently unanswered, if any
   const queued = [];               // lines that arrived with nobody asking
+  let steerer = null;              // takes lines typed mid-turn, when one is set
 
   const open = () => {
     if (rl) return rl;
     rl = readline.createInterface({ input, output, historySize });
     rl.on('line', (line) => {
       if (waiting) { const w = waiting; waiting = null; w.resolve(line); }
-      else queued.push(line);
+      // A waiting question wins: an approval prompt open during a turn gets
+      // its answer, never a steering line. The steerer may decline a line.
+      else if (steerer?.(line) !== true) queued.push(line);
     });
     rl.on('close', () => {
       closed = true;
@@ -69,6 +72,13 @@ export function deferredPrompt({ input, output, historySize = 500, onSigint } = 
       reader.prompt();
       return new Promise((resolve, reject) => { waiting = { resolve, reject }; });
     },
+    /**
+     * While set, a line typed with no question open goes to `fn` first; it
+     * returns true to take it. Pass null to go back to typing ahead.
+     */
+    steer(fn) { steerer = fn; },
+    /** Hand a line to the next question, as though it had been typed ahead. */
+    feed(line) { queued.push(line); },
     /** Closing one that was never opened is not an error, it is a no-op. */
     close() { closed = true; rl?.close(); },
     /** For tests, and for anything that wants to know without opening one. */

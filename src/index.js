@@ -7,6 +7,7 @@ import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from 
 import { pickDefault, chatModels, ensureLoaded } from './boot.js';
 import { resolveModel } from './resolve.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
+import { isSteering } from './steer.js';
 import { c, banner, fmtContext, statusLine } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
@@ -884,9 +885,22 @@ async function main() {
     messages.push({ role: 'user', content: buildContent(expanded ?? input, sent) });
     ac = new AbortController();
     term.working();
+    // Interactive terminal only: a pipe has no one to type, and the REPL's
+    // readline is the thing that reads. See src/steer.js.
+    const steering = [];
+    if (stdin.isTTY) {
+      rl.steer((l) => {
+        if (!isSteering(l)) return false;
+        steering.push(l.trim());
+        console.log(c.grey('  ↳ queued — sent after the current step'));
+        return true;
+      });
+    }
     try {
       await runTurn({
         messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: isAuto(),
+        steering,
+        onSteer: (n) => console.log(c.grey(`  ↳ ${n === 1 ? 'your note' : `${n} notes`} sent to the model`)),
       });
     } catch (e) {
       if (e.name === 'AbortError') messages.push({ role: 'assistant', content: '(interrupted)' });
@@ -901,6 +915,10 @@ async function main() {
       ac = null;
       term.ready();
       persist();
+      rl.steer(null);
+      // The turn ended (or was interrupted) before a boundary took them: they
+      // are the next prompts, in the order they were typed.
+      for (const l of steering) rl.feed(l);
     }
   }
 

@@ -70,6 +70,22 @@ export async function loadImage(path, { optional = false } = {}) {
   return { part: imagePart(buf, mime, basename(path)), mime, bytes: buf.length };
 }
 
+/** Starts every read_file result for an image the active model cannot be shown. */
+export const IMAGE_NOT_SHOWN = 'image NOT shown:';
+
+const warned = new Set();
+
+/**
+ * Tell the user, once per model, that an attached image is wasted on it.
+ * `print` receives the line; returns whether it printed.
+ */
+export function warnNoVisionOnce(model, print) {
+  if (warned.has(model)) return false;
+  warned.add(model);
+  print(`  warning: ${model} has no vision support (Kronk reports no multimodal projector), so it cannot see images. Switch with /model to a model tagged "vision".`);
+  return true;
+}
+
 /** User-message content: the plain string when there are no images. */
 export function buildContent(text, parts) {
   if (!parts?.length) return text;

@@ -141,6 +141,22 @@ export async function listModelDetails() {
   } catch { return []; }
 }
 
+const vision = new Map();
+
+/**
+ * Whether Kronk says this model carries a multimodal projector: true, false,
+ * or null when the server does not list it (unknown is not "no" — the caller
+ * then behaves as before). Only a definite answer is cached.
+ */
+export async function modelSeesImages(id) {
+  const key = `${config.baseUrl}|${id}`;
+  if (vision.has(key)) return vision.get(key);
+  const d = (await listModelDetails()).find((m) => m.id === id);
+  if (!d) return null;
+  vision.set(key, Boolean(d.has_projection));
+  return vision.get(key);
+}
+
 /** Which models are resident in the pool right now, and what they cost. */
 export async function listLoaded() {
   try {

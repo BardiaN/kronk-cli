@@ -8,7 +8,7 @@ import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
-import { loadImage } from './image.js';
+import { loadImage, IMAGE_NOT_SHOWN } from './image.js';
 
 const exec = promisify(execFile);
 export const MAX_OUT = 30_000;
@@ -888,6 +888,9 @@ export async function runTool(name, args, opts = {}) {
       case 'read_file': {
         // Bytes decide, not the name: macOS screenshots have no extension.
         const img = opts.images ? await loadImage(args.path, { optional: true }) : null;
+        if (img && opts.vision === false) {
+          return `${IMAGE_NOT_SHOWN} ${args.path} is an image (${img.mime}, ${img.bytes.toLocaleString()} bytes) but the active model has no vision support, so it could not be shown. Do not describe or guess its contents; tell the user the image could not be viewed and that a vision model is needed.`;
+        }
         if (img) {
           opts.images.push(img.part);
           return `image attached: ${args.path} (${img.mime}, ${img.bytes.toLocaleString()} bytes). It follows this result as a user message.`;

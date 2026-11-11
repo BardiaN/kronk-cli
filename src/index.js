@@ -3,7 +3,7 @@ import { stdin, stdout } from 'node:process';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure, warnConfigProblems } from './config.js';
-import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
+import { listModels, listModelDetails, listLoaded, modelLimits, tokenize, modelSeesImages } from './client.js';
 import { pickDefault, chatModels, ensureLoaded } from './boot.js';
 import { resolveModel } from './resolve.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
@@ -14,7 +14,7 @@ import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
 import { resolveFileArg, classifyBytes } from './filearg.js';
 import { mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage } from './fileref.js';
-import { loadImage, buildContent, textOf, hasImage } from './image.js';
+import { loadImage, buildContent, textOf, hasImage, warnNoVisionOnce } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
@@ -861,6 +861,10 @@ async function main() {
         + `${config.maxTokensExplicit ? ' (yours)' : ' (from its profile)'}`));
       continue;
     }
+    // Attaching still goes ahead: the user may know better than the model list.
+    const warnIfBlind = async () => {
+      if (await modelSeesImages(config.model) === false) warnNoVisionOnce(config.model, (l) => console.log(c.yellow(l)));
+    };
     if (input === '/file') { console.log(c.grey('  usage: /file <path> — also works inside a sentence: in this /file "a b.png" what is it?')); continue; }
     // `/file` anywhere in the line, any number of times. A line that is only
     // one reference keeps its old meaning: attach, then wait for the question.
@@ -879,6 +883,7 @@ async function main() {
       built.contexts.forEach((body) => messages.push({ role: 'user', content: body }));
       inlined = built.text;
       inlineImages = built.images;
+      if (inlineImages.length) await warnIfBlind();
     }
     if (parsed?.refs.length && isBareRef(parsed)) {
       try {
@@ -887,6 +892,7 @@ async function main() {
         const img = await loadImage(path, { optional: true });
         if (img) {
           pendingImages.push(img.part);
+          await warnIfBlind();
           console.log(c.grey(`  attached ${path} (${img.mime}, ${img.bytes.toLocaleString()} bytes) — goes with your next message`));
           continue;
         }

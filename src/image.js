@@ -71,6 +71,17 @@ export function buildContent(text, parts) {
   return [{ type: 'text', text }, ...parts];
 }
 
+/**
+ * The message that carries images a tool produced. A chat `tool` message holds
+ * only text, so the harness follows the round's tool results with a `user`
+ * message instead. Null when there is nothing to carry.
+ */
+export function imageMessage(parts, source = 'read_file') {
+  if (!parts?.length) return null;
+  const names = parts.map((p) => p.name ?? 'image').join(', ');
+  return { role: 'user', content: buildContent(`[image from ${source}: ${names}]`, parts) };
+}
+
 const placeholder = (p) => `[image: ${p.name ?? 'image'}]`;
 
 /**

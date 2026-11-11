@@ -899,7 +899,13 @@ the launch folder relative paths resolve against, and a same-named file one fold
 (`Desktop/...`) as a suggestion only. A file that is neither an image nor UTF-8 text is refused
 rather than pasted into the conversation. Every path must stay inside the launch root. It needs a vision model
 (one Kronk serves with a multimodal projector); kronk-cli sends the image regardless and
-prints a note if Kronk returns an error. `/context` and `/compact` count and summarize an
+prints a note if Kronk returns an error.
+
+The model can also open an image itself: `read_file` on a file whose bytes are an image (same
+launch-root check and 10 MB cap) answers "image attached" and the harness follows the round's
+tool results with a user message carrying the image, because a chat tool message cannot hold
+one. Sub-agents get the same. Ask "what is in the file 'Screenshot 2026-11-03 at 19.51.21'?"
+and the model can read it without `/file`. `/context` and `/compact` count and summarize an
 image as `[image: name.png]`, never as its base64.
 
 ## REPL commands
@@ -1335,7 +1341,7 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 
 | Tool | Approval | |
 |---|---|---|
-| `read_file` | — | Read a UTF-8 file |
+| `read_file` | — | Read a UTF-8 file; a PNG, JPEG, WebP or GIF is shown to a vision model as an image (see [Images](#images)) |
 | `list_dir` | — | List a directory |
 | `search` | — | Regex search via ripgrep, falling back to grep |
 | `edit_file` | ✋ | Replace an exact string in an existing file (`replace_all` for every match); fails with the match count if it is absent or ambiguous; shows the removed and added lines first |

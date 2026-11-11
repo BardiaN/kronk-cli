@@ -8,6 +8,7 @@ import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
+import { loadImage } from './image.js';
 
 const exec = promisify(execFile);
 export const MAX_OUT = 30_000;
@@ -218,7 +219,7 @@ export const def = (name, description, properties, required) => ({
 });
 
 export const TOOLS = [
-  def('read_file', 'Read a UTF-8 text file relative to the working directory.',
+  def('read_file', 'Read a UTF-8 text file relative to the working directory. A PNG, JPEG, WebP or GIF (10 MB at most) is shown to you as an image instead, if your model can see.',
     { path: { type: 'string' } }, ['path']),
 
   def('write_file', 'Create a new text file, or replace one wholesale. To change part of an existing file use edit_file. Requires user approval.',
@@ -825,8 +826,15 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
 export async function runTool(name, args, opts = {}) {
   try {
     switch (name) {
-      case 'read_file':
+      case 'read_file': {
+        // Bytes decide, not the name: macOS screenshots have no extension.
+        const img = opts.images ? await loadImage(args.path, { optional: true }) : null;
+        if (img) {
+          opts.images.push(img.part);
+          return `image attached: ${args.path} (${img.mime}, ${img.bytes.toLocaleString()} bytes). It follows this result as a user message.`;
+        }
         return clip(await readFile(safe(args.path), 'utf8'));
+      }
 
       case 'write_file':
         await writeFile(safe(args.path), args.content ?? '');

@@ -468,7 +468,9 @@ export function resolveSandbox({ platform = process.platform, env = process.env 
  * running totals let a read say how much fell off the front between two looks.
  */
 const MAX_JOBS = 8;
+const MAX_FINISHED = 8;
 const jobs = new Map();
+const discarded = new Set();   // ids evicted unread, so a late read can say so
 let nextJob = 1;
 let cleanupArmed = false;
 
@@ -489,12 +491,20 @@ function finishJob(job, code, signal, note = null) {
   job.note = note;
   job.ended = Date.now();
   job.settle();
+  // A job nobody reads would hold up to 800 KB for the rest of the run.
+  // Oldest finished first; running jobs are never evicted.
+  const finished = [...jobs.values()].filter((j) => j.done);
+  for (const old of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED))) {
+    jobs.delete(old.id);
+    discarded.add(old.id);
+  }
 }
 
 /** Kill every background job. Called on exit, on /exit and on /clear. */
 export function killAllJobs() {
   for (const j of jobs.values()) if (!j.done) j.killTree('SIGKILL');
   jobs.clear();
+  discarded.clear();
 }
 
 /** Number of jobs still running. */
@@ -525,6 +535,9 @@ function unread(buf, total, read) {
 export async function readJob(id, { kill = false } = {}) {
   const job = jobs.get(String(id ?? '').trim());
   if (!job) {
+    if (discarded.has(String(id ?? '').trim())) {
+      return `error: no such job "${id}" (finished and discarded — only the ${MAX_FINISHED} most recent finished jobs are kept)`;
+    }
     const known = [...jobs.keys()].join(', ');
     return `error: no background job "${id}"${known ? ` (known: ${known})` : ' (none running)'}`;
   }

@@ -312,3 +312,16 @@ test('past the job limit a timeout still kills', async () => {
   assert.match(out, /error: killed after/);
   killAllJobs();
 });
+
+test('more than 8 unread finished jobs discards the oldest with a clear message', async () => {
+  const ids = [];
+  for (let i = 0; i < 10; i++) {
+    const out = await runBash('sleep 0.3', { timeoutMs: 50 });
+    ids.push(out.match(/job (bg\d+)/)[1]);
+    if (i % 4 === 3) await new Promise((r) => setTimeout(r, 450));
+  }
+  await new Promise((r) => setTimeout(r, 600));
+  assert.match(await runTool('bash_output', { id: ids[0] }), /finished and discarded/);
+  assert.match(await runTool('bash_output', { id: ids[9] }), /exited with code 0/);
+  killAllJobs();
+});

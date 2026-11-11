@@ -1588,13 +1588,13 @@ line saying what the run cost:
 
 ```console
   1 ⚙ task explore: list every tool definition in src/, say which are gated and where
-   Six built-in tools. write_file and bash are gated, by NEEDS_APPROVAL at
+   Nine built-in tools. edit_file, write_file and bash are gated, by NEEDS_APPROVAL at
    src/tools.js:261. MCP tools are gated by name, mcpNeedsApproval at :270.
-   read_file, list_dir, search, set_plan and task are not gated.
+   read_file, list_dir, search, bash_output, set_plan and task are not gated.
    └ 3 steps · 11.4s · /tasks 1 for the transcript
   ✓ 3 lines
 
-  `write_file` and `bash`, from the `NEEDS_APPROVAL` set in src/tools.js:246…
+  `edit_file`, `write_file` and `bash`, from the `NEEDS_APPROVAL` set in src/tools.js:246…
 ```
 
 The box is the run's only appearance on screen, and that is deliberate. A nine-step survey
@@ -1610,7 +1610,7 @@ read it back. Three keys and one fallback are worth knowing:
 - **`esc` collapses the box immediately** and the run carries on. For when you have seen enough
   and want your screen back.
 - **`ctrl-c`** stops the run, as it stops anything else.
-- **An approval prompt wipes the box first.** A `code` sub-agent's `write_file` and `bash` stop
+- **An approval prompt wipes the box first.** A `code` sub-agent's `edit_file`, `write_file` and `bash` stop
   for the same question the main agent's do, and that question gets the terminal to itself.
 - **On a pipe or a dumb terminal there is no box at all.** `kronk-cli "…" | grep`, a CI job and
   an `--auto` run nobody is watching each get the plain nested lines instead, in order, with no
@@ -1706,7 +1706,7 @@ verbatim quotes in the prompt, and check the ones that matter.
 | Agent | Tools | For |
 |---|---|---|
 | `explore` | `read_file`, `list_dir`, `search` | Reading, searching, tracing how something works |
-| `code` | those plus `edit_file`, `write_file`, `bash` | Making a change, running a build, reproducing a failure |
+| `code` | those plus `edit_file`, `write_file`, `bash`, `bash_output` | Making a change, running a build, reproducing a failure |
 
 `/agents` prints this in the REPL, with the model and step cap in force.
 
@@ -1721,7 +1721,7 @@ touch anything, so that is the split.
   reading of the task, act, and say what it assumed.
 - **Delegate further.** The `task` tool is only ever offered at the top level, which is the
   entire recursion guard.
-- **Get a command past you.** Its `write_file` and `bash` calls arrive at the same prompt the
+- **Get a command past you.** Its `edit_file`, `write_file` and `bash` calls arrive at the same prompt the
   main agent's do, nested under the call that started them. `--yes` and `--auto` skip them
   exactly as they always did.
 - **Touch the checklist.** `set_plan` belongs to the task you asked for; a sub-agent has no

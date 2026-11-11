@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clip, safe, session, runBash, runTool, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
+import { clip, safe, session, runBash, runTool, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
 
 // realpath, because macOS maps /var onto /private/var and the shell reports the latter
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-tools-')));
@@ -82,6 +82,7 @@ test('a timeout is reported as such, with partial output', async () => {
 
 test('built-in approval gating covers exactly the mutating tools', () => {
   assert.ok(NEEDS_APPROVAL.has('write_file'));
+  assert.ok(NEEDS_APPROVAL.has('edit_file'));
   assert.ok(NEEDS_APPROVAL.has('bash'));
   assert.ok(!NEEDS_APPROVAL.has('read_file'));
 });
@@ -211,4 +212,40 @@ test('a search with no rg binary at all behaves the same as one with a broken rg
   try {
     assert.equal(await runTool('search', { pattern: 'nope-not-here', path: 'haystack.txt' }, {}), '(no matches)');
   } finally { restore(); }
+});
+
+// ── edit_file ─────────────────────────────────────────────────────────────────
+test('applyEdit replaces a unique match and reports misses and ambiguity', () => {
+  assert.deepEqual(applyEdit('a b c', 'b', 'X'), { text: 'a X c', count: 1 });
+  assert.match(applyEdit('a b c', 'z', 'X').error, /0 matches/);
+  assert.match(applyEdit('b b', 'b', 'X').error, /matches 2 places/);
+  assert.deepEqual(applyEdit('b b', 'b', 'X', true), { text: 'X X', count: 2 });
+  assert.equal(applyEdit('abc', 'b', '$&').text, 'a$&c', 'new_string is literal');
+  assert.ok(applyEdit('abc', '', 'X').error);
+  assert.ok(applyEdit('abc', 'b', 'b').error);
+});
+
+test('edit_file edits in place, refuses a missing file, and stays in the root', async () => {
+  writeFileSync(join(root, 'e.txt'), 'one\ntwo\nthree\n');
+  assert.match(await runTool('edit_file', { path: 'e.txt', old_string: 'two', new_string: '2' }), /edited e\.txt \(1 replacement\)/);
+  assert.equal(readFileSync(join(root, 'e.txt'), 'utf8'), 'one\n2\nthree\n');
+  assert.match(await runTool('edit_file', { path: 'e.txt', old_string: 'nope', new_string: 'x' }), /^error: .*0 matches/);
+  assert.match(await runTool('edit_file', { path: 'gone.txt', old_string: 'a', new_string: 'b' }), /write_file/);
+  assert.match(await runTool('edit_file', { path: '../x', old_string: 'a', new_string: 'b' }), /outside/);
+});
+
+test('edit_file previews and summarises like write_file', () => {
+  assert.equal(describe('edit_file', { path: 'a.js' }), 'edit a.js');
+  const p = preview('edit_file', { path: 'a.js', old_string: 'x', new_string: 'y' });
+  assert.match(p, /- x/);
+  assert.match(p, /\+ y/);
+});
+
+test('edit_file validates its arguments and refuses non-UTF-8 files', async () => {
+  assert.match(applyEdit('abc', 'b', undefined).error, /new_string must be a string/);
+  assert.equal(applyEdit('abc', 'b', '').text, 'ac', 'empty new_string deletes');
+  assert.match(applyEdit('abc', undefined, 'x').error, /old_string/);
+  writeFileSync(join(root, 'bin.dat'), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
+  assert.match(await runTool('edit_file', { path: 'bin.dat', old_string: 'a', new_string: 'z' }), /not valid UTF-8/);
+  assert.deepEqual(readFileSync(join(root, 'bin.dat')), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
 });

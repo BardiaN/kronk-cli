@@ -105,11 +105,12 @@ test('the model enum is exactly the served list it was given, and model stays op
 test('explore cannot touch anything', () => {
   const tools = names(subagentTools('explore'));
   assert.deepEqual(tools, ['read_file', 'list_dir', 'search']);
+  assert.ok(!tools.includes('edit_file'));
 });
 
 test('code can write and run, and neither agent can plan or delegate', () => {
   const code = names(subagentTools('code'));
-  assert.ok(code.includes('write_file') && code.includes('bash'));
+  assert.ok(code.includes('write_file') && code.includes('edit_file') && code.includes('bash'));
   for (const agent of Object.keys(AGENTS)) {
     const tools = names(subagentTools(agent));
     assert.ok(!tools.includes('set_plan'), `${agent} must not touch the caller's checklist`);

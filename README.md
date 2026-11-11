@@ -172,7 +172,7 @@ Two separate things keep it there, and they are worth telling apart:
 
 | | Enforced by | Covers |
 |---|---|---|
-| **Path containment** | `kronk-cli` | `read_file`, `write_file`, `list_dir`, `search` — resolved through symlinks, so a link inside the project cannot point out of it |
+| **Path containment** | `kronk-cli` | `read_file`, `edit_file`, `write_file`, `list_dir`, `search` — resolved through symlinks, so a link inside the project cannot point out of it |
 | **Shell confinement** | the kernel — `sandbox-exec` on macOS, [`bwrap`](https://github.com/containers/bubblewrap) on Linux | `bash`: writes outside the project are denied, and key material (`~/.ssh`, `~/.gnupg`, `~/.password-store`, the macOS keychain, `~/.netrc`, `~/.npmrc`) is unreadable |
 
 The startup banner says which is in force:
@@ -739,7 +739,7 @@ same way this run did.
 | `--mcp [names]` | off | Attach MCP servers — bare for all, or a comma list |
 | `--mcp-list` | — | Show configured MCP servers and their tools, then exit |
 | `-a`, `--auto` | off | Autonomous: auto-approve tools **and** run until the task is done. Implies `--yes` |
-| `-y`, `--yes` | off | Auto-approve `write_file` and `bash` without the autonomous prompt |
+| `-y`, `--yes` | off | Auto-approve `edit_file`, `write_file` and `bash` without the autonomous prompt |
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
 | `--no-subagents` | off | Remove the `task` tool, so the model cannot delegate — see [Sub-agents](#sub-agents) |
 | `--steps <n>` | unlimited | Cap tool calls per task. `0`, `off`, `none`, `inf`, `unlimited` all mean no cap |
@@ -1173,7 +1173,8 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `read_file` | — | Read a UTF-8 file |
 | `list_dir` | — | List a directory |
 | `search` | — | Regex search via ripgrep, falling back to grep |
-| `write_file` | ✋ | Create or overwrite; shows a diff preview first |
+| `edit_file` | ✋ | Replace an exact string in an existing file (`replace_all` for every match); fails with the match count if it is absent or ambiguous; shows the removed and added lines first |
+| `write_file` | ✋ | Create a file or replace one wholesale; shows a preview first |
 | `bash` | ✋ | Run a command; shows it first |
 | `set_plan` | — | Record the task checklist; replaces the stored one |
 | `task` | — | Delegate one job to a [sub-agent](#sub-agents) with its own context |
@@ -1529,7 +1530,7 @@ verbatim quotes in the prompt, and check the ones that matter.
 | Agent | Tools | For |
 |---|---|---|
 | `explore` | `read_file`, `list_dir`, `search` | Reading, searching, tracing how something works |
-| `code` | those plus `write_file`, `bash` | Making a change, running a build, reproducing a failure |
+| `code` | those plus `edit_file`, `write_file`, `bash` | Making a change, running a build, reproducing a failure |
 
 `/agents` prints this in the REPL, with the model and step cap in force.
 

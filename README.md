@@ -837,6 +837,15 @@ Two consequences worth knowing:
 
 ---
 
+## Images
+
+`/file shot.png` reads the image (PNG, JPEG, WebP or GIF, up to 10 MB, inside the launch
+root like `read_file`) and attaches it to your next message as an OpenAI `image_url` content
+part. The type is detected from the file's bytes, not its extension. It needs a vision model
+(one Kronk serves with a multimodal projector); kronk-cli sends the image regardless and
+prints a note if Kronk returns an error. `/context` and `/compact` count and summarize an
+image as `[image: name.png]`, never as its base64.
+
 ## REPL commands
 
 | Command | |
@@ -844,7 +853,7 @@ Two consequences worth knowing:
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
 | `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
-| `/file <path>` | add a file to the conversation as context |
+| `/file <path>` | add a file to the conversation as context; a `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` is attached to your next message as an image (see [Images](#images)) |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |

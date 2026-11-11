@@ -6,6 +6,7 @@ import {
 } from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
 import { forRequest } from './reasoning.js';
+import { forWire } from './image.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { markdownStream } from './markdown.js';
 import { compact, isOverflow, report } from './compact.js';
@@ -151,7 +152,7 @@ export async function runTurn({
         model,
         // The history keeps every step's reasoning; only the current task's
         // share of it goes on the wire. See src/reasoning.js.
-        messages: forRequest(messages, auto),
+        messages: forRequest(messages, auto).map(forWire),
         tools,
         signal,
         maxTokens,

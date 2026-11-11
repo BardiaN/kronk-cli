@@ -46,6 +46,11 @@ export async function loadImage(path, { optional = false } = {}) {
     const st = await fh.stat();
     const { size } = st;
     if (!st.isFile()) throw new Error(`${path} is not a regular file`);
+    // An empty file has no magic bytes, so it would pass for an empty text file
+    // and the model would be told the "image" is blank.
+    if (size === 0 && (!optional || isImagePath(path))) {
+      throw new Error(`${path} is empty (0 bytes), so there is no image in it`);
+    }
     if (optional) {
       // Peek at the magic bytes through the same handle, so a text file is
       // never read in full just to learn it is not an image.

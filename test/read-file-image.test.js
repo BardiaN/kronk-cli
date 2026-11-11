@@ -79,3 +79,14 @@ test('batched reads: all tool results first, then a single image message', () =>
   assert.deepEqual(roles.slice(0, 5), ['assistant', 'tool', 'tool', 'tool', 'user']);
   assert.equal(messages[6].content.filter((p) => p.type === 'image_url').length, 2);
 }));
+
+test('a 0-byte image path is reported as empty by read_file and loadImage', () => inTemp(async (dir) => {
+  writeFileSync(join(dir, 'blank.png'), '');
+  writeFileSync(join(dir, 'empty.txt'), '');
+  const r = await runTool('read_file', { path: 'blank.png' }, { images: [] });
+  assert.match(r, /^error: .*blank\.png is empty \(0 bytes\)/);
+  const { loadImage } = await import('../src/image.js');
+  await assert.rejects(loadImage('blank.png', { optional: true }), /is empty/);
+  assert.equal(await loadImage('empty.txt', { optional: true }), null, 'an empty text file is still just empty text');
+  assert.equal(await runTool('read_file', { path: 'empty.txt' }, { images: [] }), '');
+}));

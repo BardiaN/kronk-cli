@@ -558,9 +558,12 @@ if you want the one it ran on. A resumed session keeps writing to its own file.
 
 Each directory keeps its 20 most recent sessions; older ones are deleted as new ones are saved.
 They are stored like the sub-agent transcripts and rescue records — a directory only you can
-open, files readable only by you, and a directory owned by another user is refused. By default
-that is under the temp dir, which the OS may clear; set `KRONK_SESSION_DIR` (or `sessionDir` in
-the config file) to keep them across reboots. `--resume` applies to the REPL, not to a one-shot
+open, files readable only by you, and a directory owned by another user is refused. They live in
+`$XDG_STATE_HOME/kronk-cli/sessions`, or `~/.local/state/kronk-cli/sessions` when that is unset,
+on every platform, and they persist until pruned. Each file holds the full text of the
+conversation — your prompts, file contents and command output the model saw — so treat the
+directory as sensitive. Set `KRONK_SESSION_DIR` (or `sessionDir` in the config file) to put
+them elsewhere. `--resume` applies to the REPL, not to a one-shot
 prompt.
 
 ---
@@ -950,7 +953,7 @@ with the repository, so read it as you would any other file you cloned.
 | `KRONK_TASK_LOG` | `true` | `false` stops writing sub-agent transcripts, and `/tasks` says so |
 | `KRONK_TASK_LOG_DIR` | the temp dir | Where transcripts are written |
 | `KRONK_RESCUE_DIR` | the temp dir | Where `kronk-cli rescue` keeps its job records — see [`kronk-cli rescue`](#kronk-cli-rescue) |
-| `KRONK_SESSION_DIR` | the temp dir | Where REPL sessions are saved for `--resume` — see [Resuming a session](#resuming-a-session) |
+| `KRONK_SESSION_DIR` | `$XDG_STATE_HOME/kronk-cli/sessions`, else `~/.local/state/kronk-cli/sessions` | Where REPL sessions are saved for `--resume` — see [Resuming a session](#resuming-a-session) |
 | `KRONK_WARM` | `true` | `false` skips the boot-time model preload |
 | `KRONK_AUTO_COMPACT` | `true` | `false` disables automatic compaction |
 | `KRONK_COMPACT_AT` | `0.85` | Fraction of the window that triggers compaction |

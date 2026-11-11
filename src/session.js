@@ -1,8 +1,8 @@
 import {
   writeFileSync, renameSync, readFileSync, readdirSync, statSync, rmSync,
 } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { join, isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
 import { config } from './config.js';
 import { privateDir } from './privateDir.js';
@@ -15,15 +15,27 @@ import { privateDir } from './privateDir.js';
  * It lives beside the transcript and rescue stores and is held to the same
  * rule — the conversation is the user's prompts and the contents of their
  * files — so every directory goes through src/privateDir.js and every file is
- * 0600. Like them it defaults under `tmpdir()`, which the OS may clear;
- * `KRONK_SESSION_DIR` points it somewhere that should outlive a reboot.
+ * 0600. Unlike them it does not default under `tmpdir()`: a session is meant
+ * to be resumed later, and the OS may clear the temp dir first. It lives in the
+ * per-user state directory instead, on every platform; `KRONK_SESSION_DIR`
+ * moves it.
  *
  * The system message is never stored. A resumed session keeps the prompt and
  * project primer this launch built, which is the one that matches the current
  * mode and working tree, and the file stays free of a copy of AGENTS.md.
  */
 
-export const ROOT = () => config.sessionDir ?? join(tmpdir(), 'kronk-cli-sessions');
+/**
+ * `$XDG_STATE_HOME/kronk-cli/sessions`, else `~/.local/state/kronk-cli/sessions`.
+ * A relative XDG_STATE_HOME is ignored, as the spec says to.
+ */
+export function defaultRoot(env = process.env, home = homedir()) {
+  const xdg = env.XDG_STATE_HOME;
+  const base = xdg && isAbsolute(xdg) ? xdg : join(home, '.local', 'state');
+  return join(base, 'kronk-cli', 'sessions');
+}
+
+export const ROOT = () => config.sessionDir ?? defaultRoot();
 
 /** How many sessions a launch directory keeps; the oldest beyond it are deleted. */
 export const KEEP = 20;

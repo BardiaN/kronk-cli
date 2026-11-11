@@ -129,7 +129,7 @@ if (args.help) {
     KRONK_TERM_BELL_AFTER
                         seconds a turn must run before it rings (default 10)
     KRONK_SESSION_DIR   where REPL sessions are saved for --resume
-                        (default: the temp dir)
+                        (default: ~/.local/state/kronk-cli/sessions)
     KRONK_UPDATE_CHECK  false to never ask the package manager whether a
                         newer kronk-cli exists (default true)
 

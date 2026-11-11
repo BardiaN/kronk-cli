@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   newSessionId, isSessionId, dirKey, countTurns, hasConversation, storable, restoreMessages,
-  saveSession, trySave, listSessions, findSession, prune, summary, firstPrompt, listLines, KEEP,
+  defaultRoot, saveSession, trySave, listSessions, findSession, prune, summary, firstPrompt, listLines, KEEP,
 } from '../src/session.js';
 import { parseArgv } from '../src/argv.js';
 
@@ -187,4 +187,12 @@ test('argv: --resume with and without an id, -r, and --sessions', () => {
   const p = parseArgv(['--resume', 'fix the bug']);
   assert.equal(p.resumeId, null);
   assert.deepEqual(p.words, ['fix the bug']);
+});
+
+test('the default store is the per-user state directory, not the temp dir', () => {
+  assert.equal(defaultRoot({ XDG_STATE_HOME: '/x/state' }, '/home/u'), join('/x/state', 'kronk-cli', 'sessions'));
+  assert.equal(defaultRoot({}, '/home/u'), join('/home/u', '.local', 'state', 'kronk-cli', 'sessions'));
+  // A relative XDG_STATE_HOME is not a place; fall back rather than write under the cwd.
+  assert.equal(defaultRoot({ XDG_STATE_HOME: 'rel' }, '/home/u'), join('/home/u', '.local', 'state', 'kronk-cli', 'sessions'));
+  assert.ok(!defaultRoot({}, '/home/u').startsWith(tmpdir()));
 });

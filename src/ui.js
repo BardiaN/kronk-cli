@@ -64,6 +64,31 @@ export function fmtContext(used, window) {
   return c.grey(label);
 }
 
+/** A rough per-image cost for the `/context` estimate; the server does not say before the request. */
+export const IMAGE_TOKENS_ESTIMATE = 768;
+
+/**
+ * The lines `/context` prints. The estimate counts everything a request
+ * carries: the messages (system prompt included), the tool schemas and the
+ * images. `measured` is what the server reported for the last request, which is
+ * the number the status line shows, so the two can be compared. Pure: the
+ * caller tokenizes.
+ */
+export function contextLines({ messageTokens, toolTokens, images = 0, measured = 0, window, native, messages }) {
+  const imageTokens = images * IMAGE_TOKENS_ESTIMATE;
+  const est = messageTokens + toolTokens + imageTokens;
+  const parts = [`messages and system prompt ${k(messageTokens)}`, `tool schemas ${k(toolTokens)}`];
+  if (images) parts.push(`${images} image${images === 1 ? '' : 's'} ~${k(imageTokens)} (a guess)`);
+  const lines = [`  ${fmtContext(est, window) || c.grey('unknown')} ${c.grey('estimate')}`, c.grey(`    ${parts.join(' + ')}`)];
+  if (measured) {
+    lines.push(`  ${fmtContext(measured, window) || c.grey(String(measured))} ${c.grey('measured by the server on the last request (the status line)')}`);
+  }
+  lines.push(c.grey(`  window: ${window?.toLocaleString() ?? '?'} tokens`
+    + (native ? ` · model supports up to ${native.toLocaleString()}` : '')));
+  lines.push(c.grey(`  messages: ${messages}`));
+  return lines;
+}
+
 export function fmtUsage(u, window) {
   if (!u) return '';
   const bits = [`${u.prompt_tokens ?? 0}→${u.completion_tokens ?? 0} tok`];

@@ -8,7 +8,7 @@ import { pickDefault, chatModels, ensureLoaded } from './boot.js';
 import { resolveModel } from './resolve.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { isSteering } from './steer.js';
-import { c, banner, fmtContext, statusLine } from './ui.js';
+import { c, banner, statusLine, contextLines } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
@@ -17,11 +17,11 @@ import { mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage } fr
 import { loadImage, buildContent, textOf, hasImage, warnNoVisionOnce } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
-import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
+import { resolveSandbox, sandbox, killAllJobs, TOOLS } from './tools.js';
 import { parseArgv } from './argv.js';
 import { resolveApprovalMode, decideApproval } from './approval.js';
 import { deferredPrompt } from './prompt.js';
-import { AGENTS, setServedModels } from './subagent.js';
+import { AGENTS, setServedModels, taskTools } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
 import { runSetup, runKronk } from './setup.js';
 import { runRescue } from './rescue.js';
@@ -849,12 +849,20 @@ async function main() {
       // Count what the next request would actually carry, replayed reasoning
       // included — the history holds reasoning that is never sent, and a meter
       // that charged for it would read high for the whole session.
-      const used = await tokenize(config.model, forRequest(messages, isAuto())
-        .map((m) => `${m.reasoning_content ?? ''}${textOf(m.content)}`).join('\n'));
-      console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
-      console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`
-        + (config.nativeContext ? ` · model supports up to ${config.nativeContext.toLocaleString()}` : '')));
-      console.log(c.grey(`  messages: ${messages.length}`));
+      // The tool schemas ride along on every request and the images are not in
+      // the text at all, so both are added; otherwise this read far below the
+      // status line, which shows what the server counted.
+      const body = forRequest(messages, isAuto())
+        .map((m) => `${m.reasoning_content ?? ''}${textOf(m.content)}`).join('\n');
+      const defs = [...TOOLS, ...taskTools(0), ...(mcp?.toolDefs() ?? [])];
+      const [messageTokens, toolTokens] = await Promise.all([
+        tokenize(config.model, body), tokenize(config.model, JSON.stringify(defs))]);
+      const images = messages.reduce((n, m) => n + (Array.isArray(m.content)
+        ? m.content.filter((p) => p?.type === 'image_url').length : 0), 0) + pendingImages.length;
+      contextLines({
+        messageTokens, toolTokens, images, measured: config.lastUsed,
+        window: config.contextWindow, native: config.nativeContext, messages: messages.length,
+      }).forEach((l) => console.log(l));
       continue;
     }
     if (input.startsWith('/model ')) {

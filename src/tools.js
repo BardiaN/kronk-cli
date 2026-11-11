@@ -417,6 +417,41 @@ export const stripMark = (text) => {
 };
 
 /**
+ * Streaming counterpart of `stripMark` for live progress. The trap prints
+ * `\n` + MARK + the directory, and the pipe may split that anywhere — even into
+ * a chunk holding only the newline — so per-chunk stripping leaks pieces of it.
+ * `push(chunk)` returns what is safe to show now: a tail that could still grow
+ * into the marker is held back, and nothing at or after the marker is ever
+ * returned. A held-back tail that turns out to be ordinary output is released
+ * with the next chunk.
+ */
+export function markFilter() {
+  const tag = `\n${MARK}`;
+  let held = '';
+  let done = false;
+  return {
+    push(chunk) {
+      if (done) return '';
+      held += chunk;
+      const cut = held.indexOf(tag);
+      if (cut !== -1) {
+        done = true;
+        const shown = held.slice(0, cut);
+        held = '';
+        return shown;
+      }
+      let keep = 0;
+      for (let k = Math.min(tag.length - 1, held.length); k > 0; k--) {
+        if (tag.startsWith(held.slice(-k))) { keep = k; break; }
+      }
+      const shown = held.slice(0, held.length - keep);
+      held = held.slice(held.length - keep);
+      return shown;
+    },
+  };
+}
+
+/**
  * What is actually confining `bash`, resolved once and reported in the banner.
  * `pending` until the first command runs, because the preflight costs a process.
  */
@@ -635,6 +670,8 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
     let truncated = false;
     let lines = 0;
     let produced = 0;          // total bytes the command has emitted
+    const visibleOut = markFilter();
+    let shownLine = '';        // a chunk of bare newlines keeps the previous live line
 
     const take = (chunk, into) => {
       const raw = chunk.toString();
@@ -647,12 +684,12 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       }
       // The EXIT trap's cwd marker is bookkeeping, not output: keep it out of
       // the live line and the size estimate. The final result strips it too.
-      const text = into === 'out' ? stripMark(raw) : raw;
-      // A chunk that was only the marker (and its leading newline) says nothing.
-      if (!text || (text !== raw && !text.trim())) return;
+      const text = into === 'out' ? visibleOut.push(raw) : raw;
+      if (!text) return;
       produced += text.length;
       lines += (text.match(/\n/g) ?? []).length;
-      const lastLine = text.trimEnd().split('\n').pop() ?? '';
+      const lastLine = text.trimEnd().split('\n').pop() || shownLine;
+      shownLine = lastLine;
       onProgress?.({
         seconds: (Date.now() - started) / 1000,
         lines,

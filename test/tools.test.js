@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clip, safe, session, runBash, runTool, killAllJobs, backgroundJobs, readJob, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
+import { clip, safe, session, runBash, runTool, killAllJobs, backgroundJobs, readJob, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval, markFilter } from '../src/tools.js';
 
 // realpath, because macOS maps /var onto /private/var and the shell reports the latter
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-tools-')));
@@ -345,4 +345,24 @@ test('more than 8 unread finished jobs discards the oldest with a clear message'
   assert.match(await runTool('bash_output', { id: ids[0] }), /finished and discarded/);
   assert.match(await runTool('bash_output', { id: ids[9] }), /exited with code 0/);
   killAllJobs();
+});
+
+test('the marker is held back however the pipe splits it, even a lone newline', () => {
+  // What the trap appends after a command that printed "hello\n": the pipe can
+  // cut this anywhere, including into a chunk that is only the leading "\n".
+  const stream = 'hello\n\n__KRONK_CWD__/tmp/project';
+  for (let i = 0; i <= stream.length; i++) {
+    for (let j = i; j <= stream.length; j++) {
+      const f = markFilter();
+      const shown = [stream.slice(0, i), stream.slice(i, j), stream.slice(j)].map((c) => f.push(c)).join('');
+      assert.equal(shown, 'hello\n', `split at ${i},${j}`);
+    }
+  }
+});
+
+test('a tail that only looked like the marker is released with the next chunk', () => {
+  const f = markFilter();
+  assert.equal(f.push('a\n__KRO'), 'a');
+  assert.equal(f.push('NK is not it\n'), '\n__KRONK is not it');
+  assert.equal(f.push('\n__KRONK_CWD__/x'), '\n');
 });

@@ -887,7 +887,17 @@ Two consequences worth knowing:
 
 `/file shot.png` reads the image (PNG, JPEG, WebP or GIF, up to 10 MB, inside the launch
 root like `read_file`) and attaches it to your next message as an OpenAI `image_url` content
-part. The type is detected from the file's bytes, not its extension. It needs a vision model
+part. The type is detected from the file's bytes, not its extension.
+
+The argument is forgiving about how a path was typed: one pair of surrounding quotes is
+stripped (`/file "Screenshot 2026-11-03 at 19.51.21"`), `~/` means your home directory, and a
+name with no image extension also tries `.png`, `.jpg`, `.jpeg`, `.webp` and `.gif` (macOS hides
+`.png` on screenshots). macOS screenshot names contain a narrow no-break space (U+202F) before
+AM/PM; a typed plain space matches it. Each guess is used only when exactly one file fits, and
+`/file` says which it used. A path that is not found is reported with the absolute path tried,
+the launch folder relative paths resolve against, and a same-named file one folder down
+(`Desktop/...`) as a suggestion only. A file that is neither an image nor UTF-8 text is refused
+rather than pasted into the conversation. Every path must stay inside the launch root. It needs a vision model
 (one Kronk serves with a multimodal projector); kronk-cli sends the image regardless and
 prints a note if Kronk returns an error. `/context` and `/compact` count and summarize an
 image as `[image: name.png]`, never as its base64.
@@ -902,7 +912,7 @@ instead — see [Steering a running task](#steering-a-running-task).
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
 | `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
-| `/file <path>` | add a file to the conversation as context; a `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` is attached to your next message as an image (see [Images](#images)) |
+| `/file <path>` | add a file to the conversation as context; an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |

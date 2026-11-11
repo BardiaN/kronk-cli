@@ -12,7 +12,8 @@ import { c, banner, fmtContext, statusLine } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
-import { isImagePath, loadImage, buildContent, textOf, hasImage } from './image.js';
+import { resolveFileArg, classifyBytes } from './filearg.js';
+import { loadImage, buildContent, textOf, hasImage } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
@@ -375,7 +376,7 @@ async function showModels() {
 const HELP = `
   ${c.bold('/models')}          list models Kronk is serving
   ${c.bold('/model <id>')}      switch model
-  ${c.bold('/file <path>')}     add a file as context; an image (png/jpg/webp/gif) rides with your next message
+  ${c.bold('/file <path>')}     add a file as context (quotes, ~, and a hidden .png are fine); an image rides with your next message
   ${c.bold('/thinking')}        show/hide the model's reasoning
   ${c.bold('/think')}           turn reasoning off entirely (much faster)
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
@@ -855,17 +856,21 @@ async function main() {
       continue;
     }
     if (input.startsWith('/file ')) {
-      const path = input.slice(6).trim();
-      if (isImagePath(path)) {
-        try {
-          const img = await loadImage(path);
+      try {
+        const { path, note } = await resolveFileArg(input.slice(6));
+        if (note) console.log(c.grey(`  ${note}`));
+        const img = await loadImage(path, { optional: true });
+        if (img) {
           pendingImages.push(img.part);
           console.log(c.grey(`  attached ${path} (${img.mime}, ${img.bytes.toLocaleString()} bytes) — goes with your next message`));
-        } catch (e) { console.log(c.red(`  ${e.message}`)); }
-        continue;
-      }
-      try {
-        const body = await readFile(path, 'utf8');
+          continue;
+        }
+        const raw = await readFile(path);
+        if (classifyBytes(raw) !== 'text') {
+          console.log(c.red(`  ${path} is binary and not a PNG, JPEG, WebP or GIF; not added`));
+          continue;
+        }
+        const body = raw.toString('utf8');
         messages.push({ role: 'user', content: `Contents of ${path}:\n\n\`\`\`\n${body}\n\`\`\`` });
         console.log(c.grey(`  added ${path} (${body.length} bytes)`));
       } catch (e) { console.log(c.red(`  ${e.message}`)); }

@@ -309,11 +309,28 @@ export async function runTurn({
         for (const b of batch) {
           out(`${c.grey(`  ${at}`)} ${c.blue(`⚙ ${describe(b.name, parsed.get(b))}`)}`);
         }
-        const results = await runConcurrently(batch, (b) => runTool(b.name, parsed.get(b)));
+        // Hooks run per call, as on the serial path: a pre-hook that blocks
+        // read_file must not be bypassed just because the call was batched.
+        // Warnings are collected and printed in call order with the results.
+        const ran = await runConcurrently(batch, async (b) => {
+          const bArgs = parsed.get(b);
+          const pre = await runPre(config.hooks, b.name, bArgs);
+          if (pre.blocked) return { pre, result: `error: blocked by a pre-tool hook: ${pre.message}` };
+          const result = await runTool(b.name, bArgs);
+          return { pre, result, post: await runPost(config.hooks, b.name, bArgs, result) };
+        });
         for (const [i, b] of batch.entries()) {
-          const result = await maybeDistill(results[i], {
-            model, signal, out, command: describe(b.name, parsed.get(b)),
-          });
+          const { pre, post } = ran[i];
+          pre.warnings.forEach((w) => out(c.yellow(`  ${w} (pre-hook for ${b.name})`)));
+          post?.warnings.forEach((w) => out(c.yellow(`  ${w} (post-hook for ${b.name})`)));
+          let result = ran[i].result;
+          if (pre.blocked) out(c.red('  ✗ blocked by hook'));
+          else {
+            result = await maybeDistill(result, {
+              model, signal, out, command: describe(b.name, parsed.get(b)),
+            });
+            if (post.note) result = `${result}\n${post.note}`;
+          }
           if (result.startsWith('error:')) toolResultLines(result).forEach((l) => out(l));
           else out(c.grey(`  ✓ ${result.split('\n').length} lines`));
           messages.push({ role: 'tool', tool_call_id: b.id, content: result });

@@ -1,6 +1,7 @@
 import { streamChat, tokenize } from './client.js';
 import { config } from './config.js';
 import { forRequest } from './reasoning.js';
+import { textOf } from './image.js';
 import { c } from './ui.js';
 
 const PROMPT = `Summarize the conversation above so it can be continued in a fresh context.
@@ -49,12 +50,12 @@ function transcript(messages) {
   return messages
     .filter((m) => m.role !== 'system')
     .map((m) => {
-      if (m.role === 'tool') return `[tool result]\n${String(m.content).slice(0, 4000)}`;
+      if (m.role === 'tool') return `[tool result]\n${textOf(m.content).slice(0, 4000)}`;
       const calls = m.tool_calls?.length
         ? `\n[called ${m.tool_calls.map((t) => t.function.name).join(', ')}]`
         : '';
       const thought = m.reasoning_content ? `[reasoning]\n${m.reasoning_content}\n` : '';
-      return `${m.role}: ${thought}${m.content ?? ''}${calls}`;
+      return `${m.role}: ${thought}${textOf(m.content)}${calls}`;
     })
     .join('\n\n');
 }
@@ -80,7 +81,7 @@ export async function compact(messages, {
   const raw = transcript(forRequest(messages, auto));
   if (!raw.trim()) return { messages, before: 0, after: 0 };
 
-  const before = await tokenize(model, [system.content, raw].join('\n'));
+  const before = await tokenize(model, [textOf(system.content), raw].join('\n'));
 
   // Leave room for the instruction and the summary itself. The window belongs
   // to the model this compaction runs on, which is not always the one the
@@ -108,7 +109,7 @@ export async function compact(messages, {
     { role: 'user', content: `[context compacted — summary of the work so far]\n\n${summary.trim()}` },
     { role: 'assistant', content: 'Understood. Continuing from there.' },
   ];
-  const after = await tokenize(model, next.map((m) => m.content).join('\n'));
+  const after = await tokenize(model, next.map((m) => textOf(m.content)).join('\n'));
 
   // A short conversation can summarize to something longer than itself. Keep
   // the original rather than paying tokens to lose detail.

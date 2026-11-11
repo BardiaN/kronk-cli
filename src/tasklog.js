@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { config } from './config.js';
 import { privateDir } from './privateDir.js';
 import { c, elapsed } from './ui.js';
+import { textOf } from './image.js';
 
 /**
  * Sub-agent transcripts: the one part of a session you could not go back to.
@@ -263,12 +264,12 @@ export function transcriptLines(n) {
       for (const t of m.tool_calls ?? []) {
         out.push('', `  ${c.blue(`\u2699 ${t.function?.name}`)} ${c.grey(t.function?.arguments ?? '')}`);
       }
-      const text = String(m.content ?? '').trim();
+      const text = textOf(m.content).trim();
       if (text && !(m.tool_calls ?? []).length) {
         out.push('', ...text.split('\n').map((l) => `  ${l}`));
       }
     } else if (m.role === 'tool') {
-      out.push(...String(m.content ?? '').split('\n').map((l) => c.grey(`  \u2502 ${l}`)));
+      out.push(...textOf(m.content).split('\n').map((l) => c.grey(`  \u2502 ${l}`)));
     }
   }
 

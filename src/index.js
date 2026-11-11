@@ -11,6 +11,7 @@ import { c, banner, fmtContext, statusLine } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
+import { isImagePath, loadImage, buildContent, textOf, hasImage } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
 import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
@@ -364,7 +365,7 @@ async function showModels() {
 const HELP = `
   ${c.bold('/models')}          list models Kronk is serving
   ${c.bold('/model <id>')}      switch model
-  ${c.bold('/file <path>')}     add a file to the conversation as context
+  ${c.bold('/file <path>')}     add a file as context; an image (png/jpg/webp/gif) rides with your next message
   ${c.bold('/thinking')}        show/hide the model's reasoning
   ${c.bold('/think')}           turn reasoning off entirely (much faster)
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
@@ -584,6 +585,9 @@ async function main() {
     : c.grey(`paths + ${backend}`)}\n`);
 
   const messages = [{ role: 'system', content }];
+  // Images from /file wait here for the next message rather than becoming a
+  // turn of their own: a picture with no question would just draw a reply.
+  const pendingImages = [];
   // The system prompt is the one record of which mode we are in — /auto rewrites
   // it — so both the status line and the turn read the answer from there.
   const isAuto = () => messages[0].content.startsWith(SYSTEM_AUTO);
@@ -747,7 +751,7 @@ async function main() {
       // included — the history holds reasoning that is never sent, and a meter
       // that charged for it would read high for the whole session.
       const used = await tokenize(config.model, forRequest(messages, isAuto())
-        .map((m) => `${m.reasoning_content ?? ''}${m.content ?? ''}`).join('\n'));
+        .map((m) => `${m.reasoning_content ?? ''}${textOf(m.content)}`).join('\n'));
       console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
       console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`
         + (config.nativeContext ? ` · model supports up to ${config.nativeContext.toLocaleString()}` : '')));
@@ -772,6 +776,14 @@ async function main() {
     }
     if (input.startsWith('/file ')) {
       const path = input.slice(6).trim();
+      if (isImagePath(path)) {
+        try {
+          const img = await loadImage(path);
+          pendingImages.push(img.part);
+          console.log(c.grey(`  attached ${path} (${img.mime}, ${img.bytes.toLocaleString()} bytes) — goes with your next message`));
+        } catch (e) { console.log(c.red(`  ${e.message}`)); }
+        continue;
+      }
       try {
         const body = await readFile(path, 'utf8');
         messages.push({ role: 'user', content: `Contents of ${path}:\n\n\`\`\`\n${body}\n\`\`\`` });
@@ -789,7 +801,8 @@ async function main() {
     const expanded = resolveInvocation(input, presets);
     if (input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
 
-    messages.push({ role: 'user', content: expanded ?? input });
+    const sent = pendingImages.splice(0);
+    messages.push({ role: 'user', content: buildContent(expanded ?? input, sent) });
     ac = new AbortController();
     term.working();
     try {
@@ -798,7 +811,13 @@ async function main() {
       });
     } catch (e) {
       if (e.name === 'AbortError') messages.push({ role: 'assistant', content: '(interrupted)' });
-      else console.error(c.red(`\n  ${e.message}`));
+      else {
+        console.error(c.red(`\n  ${e.message}`));
+        // Sent anyway: there is no reliable way to ask a model whether it can
+        // see. If it cannot, the server's error is the answer, so say what it
+        // probably means.
+        if (messages.some(hasImage)) console.log(c.grey('  note: this conversation carries an image; if the model has no vision support, switch to one that does'));
+      }
     } finally {
       ac = null;
       term.ready();

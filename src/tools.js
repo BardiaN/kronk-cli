@@ -221,8 +221,22 @@ export const TOOLS = [
   def('read_file', 'Read a UTF-8 text file relative to the working directory.',
     { path: { type: 'string' } }, ['path']),
 
-  def('write_file', 'Create or overwrite a text file. Requires user approval.',
+  def('write_file', 'Create a new text file, or replace one wholesale. To change part of an existing file use edit_file. Requires user approval.',
     { path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']),
+
+  // Steers the model off write_file for existing files: rewriting a whole file
+  // costs every unchanged line in tokens and is where local models drop code.
+  def('edit_file',
+    'Change part of an existing file by replacing an exact string. Prefer this over write_file for any '
+    + 'change to a file that already exists. old_string must match the file exactly (whitespace included) '
+    + 'and be unique unless replace_all is true. Requires user approval.',
+    {
+      path: { type: 'string' },
+      old_string: { type: 'string', description: 'The exact text to replace.' },
+      new_string: { type: 'string', description: 'The text to put in its place.' },
+      replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring exactly one.' },
+    },
+    ['path', 'old_string', 'new_string']),
 
   def('list_dir', 'List entries in a directory. Defaults to the working directory.',
     { path: { type: 'string' } }, []),
@@ -258,7 +272,7 @@ export const TOOLS = [
 ];
 
 /** Tools that mutate state or run arbitrary code must be confirmed. */
-export const NEEDS_APPROVAL = new Set(['write_file', 'bash']);
+export const NEEDS_APPROVAL = new Set(['write_file', 'edit_file', 'bash']);
 
 /**
  * MCP tools are arbitrary third-party code, so anything that looks like it
@@ -271,7 +285,34 @@ export function mcpNeedsApproval(qualifiedName) {
   return MUTATING.test(qualifiedName.split('__').slice(1).join('__'));
 }
 
+/**
+ * Exact-string replacement, as a pure function so the failure messages are
+ * testable without a filesystem. Returns `{ text }` or `{ error }`.
+ *
+ * A miss or an ambiguous match is reported with the count rather than
+ * guessing: replacing the first of several would silently edit the wrong place.
+ */
+export function applyEdit(text, oldStr, newStr, replaceAll = false) {
+  if (typeof oldStr !== 'string' || oldStr === '') return { error: 'old_string must not be empty (to create a file use write_file)' };
+  if (oldStr === newStr) return { error: 'old_string and new_string are identical, so nothing would change' };
+  const count = text.split(oldStr).length - 1;
+  if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
+  if (count > 1 && !replaceAll) {
+    return { error: `old_string matches ${count} places; add surrounding lines to make it unique, or set replace_all to true` };
+  }
+  // split/join rather than String.replace, so `$&` in new_string stays literal.
+  return { text: text.split(oldStr).join(newStr), count };
+}
+
 export function preview(name, args) {
+  if (name === 'edit_file') {
+    const cut = (s, mark, paint) => {
+      const lines = String(s ?? '').split('\n');
+      const out = lines.slice(0, 12).map((l) => paint(`${mark} ${l}`)).join('\n');
+      return lines.length > 12 ? `${out}${c.grey(`\n  …${lines.length - 12} more lines`)}` : out;
+    };
+    return `${c.bold(args.path)}\n${cut(args.old_string, '-', c.red)}\n${cut(args.new_string, '+', c.green)}`;
+  }
   if (name === 'write_file') {
     const lines = (args.content ?? '').split('\n');
     const head = lines.slice(0, 12).map((l) => c.green(`+ ${l}`)).join('\n');
@@ -286,6 +327,7 @@ export function describe(name, args) {
   switch (name) {
     case 'read_file':  return `read ${args.path}`;
     case 'write_file': return `write ${args.path}`;
+    case 'edit_file':  return `edit ${args.path}`;
     case 'list_dir':   return `ls ${args.path ?? '.'}`;
     case 'search':     return `search /${args.pattern}/ in ${args.path ?? '.'}`;
     case 'bash':       return `bash: ${args.cmd}`;
@@ -544,6 +586,20 @@ export async function runTool(name, args, opts = {}) {
       case 'write_file':
         await writeFile(safe(args.path), args.content ?? '');
         return `wrote ${args.path} (${(args.content ?? '').length} bytes)`;
+
+      case 'edit_file': {
+        const file = safe(args.path);
+        let before;
+        try { before = await readFile(file, 'utf8'); }
+        catch (e) {
+          if (e.code === 'ENOENT') return `error: ${args.path} does not exist; use write_file to create it`;
+          throw e;
+        }
+        const r = applyEdit(before, args.old_string, args.new_string, args.replace_all === true);
+        if (r.error) return `error: ${r.error}`;
+        await writeFile(file, r.text);
+        return `edited ${args.path} (${r.count} replacement${r.count === 1 ? '' : 's'})`;
+      }
 
       case 'list_dir': {
         const dir = safe(args.path ?? '.');

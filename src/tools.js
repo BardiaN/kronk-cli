@@ -572,6 +572,8 @@ const INTERRUPT_GRACE_MS = 2000;
 
 /** Kill every background job and any foreground command. Called on exit, on /exit and on /clear. */
 export function killAllJobs() {
+  for (const kill of foreground) kill('SIGKILL');
+  foreground.clear();
   for (const j of jobs.values()) if (!j.done) j.killTree('SIGKILL');
   jobs.clear();
   discarded.clear();
@@ -730,6 +732,9 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT, s
       foreground.delete(killTree);
       clearTimeout(hardKill);
     };
+    // Exit, SIGHUP and SIGTERM must not leave this command running either.
+    foreground.add(killTree);
+    armExitCleanup();
     signal?.addEventListener('abort', onAbort, { once: true });
 
     let onProgress = progress;

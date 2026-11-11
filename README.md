@@ -833,11 +833,30 @@ Two consequences worth knowing:
 | `/agents` | the sub-agents `task` can delegate to, what each may touch, and the default model |
 | `/tasks [n]` | sub-agent runs this session; with `n`, that one in full |
 | `/mcp` | list attached MCP servers and their tools |
+| `/presets` | saved prompts, each with a one-line preview; run one with `/<name> [extra text]` |
 | `/context` | how much of the context window is used |
 | `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
 | `/compact` | replace the conversation with a summary of itself |
 | `/clear` | reset the conversation, keep the model |
 | `/exit`, `/quit` | quit |
+
+### Presets
+
+Named, reusable prompts. `/review src/agent.js` sends the `review` preset as if you had typed it.
+They come from three places, later ones winning:
+
+1. a `presets` object in the config file: `"presets": { "review": "Review the staged diff for bugs." }`
+2. `~/.config/kronk-cli/prompts/<name>.md`
+3. `.kronk/prompts/<name>.md` in the project you launched from
+
+Names are `[a-z0-9-]+`; anything else is skipped. `$ARGS` in a preset is replaced by whatever you
+type after the name (`Explain $ARGS in plain words`); a preset without it gets that text appended
+on a new paragraph. `/presets` lists what loaded.
+
+Built-in commands always win: a preset called `clear` is ignored, and startup says so once.
+Presets load at startup, so edit a file and restart. A preset is only text sent as your message;
+any tool call it leads to still asks for approval as usual. A project's `.kronk/prompts/` comes
+with the repository, so read it as you would any other file you cloned.
 
 ---
 

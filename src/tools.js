@@ -410,6 +410,12 @@ function whereLines(pwd, escaped) {
 
 const MARK = '__KRONK_CWD__';
 
+/** `text` without the cwd marker the EXIT trap appends (and the directory after it). */
+export const stripMark = (text) => {
+  const cut = text.indexOf(MARK);
+  return cut === -1 ? text : text.slice(0, cut);
+};
+
 /**
  * What is actually confining `bash`, resolved once and reported in the banner.
  * `pending` until the first command runs, because the preflight costs a process.
@@ -631,16 +637,21 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
     let produced = 0;          // total bytes the command has emitted
 
     const take = (chunk, into) => {
-      const text = chunk.toString();
-      produced += text.length;
-      if (into === 'out') outTotal += text.length; else errTotal += text.length;
-      lines += (text.match(/\n/g) ?? []).length;
-      if (into === 'out') out += text; else err += text;
+      const raw = chunk.toString();
+      if (into === 'out') outTotal += raw.length; else errTotal += raw.length;
+      if (into === 'out') out += raw; else err += raw;
       if (out.length + err.length > MAX_CAPTURE) {
         truncated = true;
         if (out.length > MAX_CAPTURE) out = out.slice(-MAX_CAPTURE);
         if (err.length > MAX_CAPTURE) err = err.slice(-MAX_CAPTURE);
       }
+      // The EXIT trap's cwd marker is bookkeeping, not output: keep it out of
+      // the live line and the size estimate. The final result strips it too.
+      const text = into === 'out' ? stripMark(raw) : raw;
+      // A chunk that was only the marker (and its leading newline) says nothing.
+      if (!text || (text !== raw && !text.trim())) return;
+      produced += text.length;
+      lines += (text.match(/\n/g) ?? []).length;
       const lastLine = text.trimEnd().split('\n').pop() ?? '';
       onProgress?.({
         seconds: (Date.now() - started) / 1000,

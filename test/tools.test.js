@@ -85,6 +85,27 @@ test('a timeout moves the command to the background instead of killing it', asyn
   assert.match(await runTool('bash_output', { id }), /no background job/);
 });
 
+test('live progress never shows the internal cwd marker', async () => {
+  const seen = [];
+  const out = await runBash('echo hello', { onProgress: (p) => seen.push(p) });
+  assert.equal(out.trim(), 'hello');
+  assert.ok(seen.length >= 1);
+  for (const p of seen) assert.ok(!p.lastLine.includes('__KRONK_CWD__'), `leaked: ${p.lastLine}`);
+  assert.equal(seen.at(-1).lastLine, 'hello');
+  assert.equal(seen.at(-1).bytes, 'hello\n'.length, 'the marker is not counted in the size estimate');
+});
+
+test('bash_output of a job that has finished does not show the cwd marker', async () => {
+  const out = await runBash('echo started; sleep 0.6; echo finished', { timeoutMs: 200 });
+  assert.ok(!out.includes('__KRONK_CWD__'));
+  const id = out.match(/job (bg\d+)/)[1];
+  await new Promise((r) => setTimeout(r, 1200));
+  const read = await runTool('bash_output', { id });
+  assert.match(read, /exited with code 0/);
+  assert.match(read, /finished/);
+  assert.ok(!read.includes('__KRONK_CWD__'), read);
+});
+
 test('built-in approval gating covers exactly the mutating tools', () => {
   assert.ok(NEEDS_APPROVAL.has('write_file'));
   assert.ok(NEEDS_APPROVAL.has('edit_file'));

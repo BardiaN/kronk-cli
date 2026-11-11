@@ -240,3 +240,12 @@ test('edit_file previews and summarises like write_file', () => {
   assert.match(p, /- x/);
   assert.match(p, /\+ y/);
 });
+
+test('edit_file validates its arguments and refuses non-UTF-8 files', async () => {
+  assert.match(applyEdit('abc', 'b', undefined).error, /new_string must be a string/);
+  assert.equal(applyEdit('abc', 'b', '').text, 'ac', 'empty new_string deletes');
+  assert.match(applyEdit('abc', undefined, 'x').error, /old_string/);
+  writeFileSync(join(root, 'bin.dat'), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
+  assert.match(await runTool('edit_file', { path: 'bin.dat', old_string: 'a', new_string: 'z' }), /not valid UTF-8/);
+  assert.deepEqual(readFileSync(join(root, 'bin.dat')), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
+});

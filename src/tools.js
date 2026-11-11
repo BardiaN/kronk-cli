@@ -293,7 +293,9 @@ export function mcpNeedsApproval(qualifiedName) {
  * guessing: replacing the first of several would silently edit the wrong place.
  */
 export function applyEdit(text, oldStr, newStr, replaceAll = false) {
-  if (typeof oldStr !== 'string' || oldStr === '') return { error: 'old_string must not be empty (to create a file use write_file)' };
+  if (typeof oldStr !== 'string' || oldStr === '') return { error: 'old_string must be a non-empty string (to create a file use write_file)' };
+  // Checked because split().join(undefined) would insert a literal ",".
+  if (typeof newStr !== 'string') return { error: 'new_string must be a string (use an empty string to delete the matched text)' };
   if (oldStr === newStr) return { error: 'old_string and new_string are identical, so nothing would change' };
   const count = text.split(oldStr).length - 1;
   if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
@@ -590,7 +592,15 @@ export async function runTool(name, args, opts = {}) {
       case 'edit_file': {
         const file = safe(args.path);
         let before;
-        try { before = await readFile(file, 'utf8'); }
+        try {
+          const raw = await readFile(file);
+          before = raw.toString('utf8');
+          // Decoding invalid UTF-8 substitutes U+FFFD, and writing that back would
+          // silently corrupt the file, so a lossy round trip is refused outright.
+          if (!Buffer.from(before, 'utf8').equals(raw)) {
+            return `error: ${args.path} is not valid UTF-8 text; edit_file will not rewrite it`;
+          }
+        }
         catch (e) {
           if (e.code === 'ENOENT') return `error: ${args.path} does not exist; use write_file to create it`;
           throw e;

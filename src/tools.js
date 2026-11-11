@@ -247,6 +247,18 @@ export const TOOLS = [
   def('bash', 'Run a shell command in the working directory. Requires user approval.',
     { cmd: { type: 'string' } }, ['cmd']),
 
+  // Never gated: it runs nothing new. Killing is a SIGKILL to a process group
+  // the user already approved when they approved the `bash` call that started it.
+  def('bash_output',
+    'A bash command that outlives its timeout keeps running in the background and is given a job id. '
+    + 'Call this with that id to read what it has printed since you last looked and to see whether it has '
+    + 'finished (with its exit status). Set kill to true to stop it.',
+    {
+      id: { type: 'string', description: 'The job id from the bash result, e.g. "bg1".' },
+      kill: { type: 'boolean', description: 'Stop the job instead of just reading it.' },
+    },
+    ['id']),
+
   // The description is the only instruction a small model reliably reads, so it
   // carries the whole protocol: call it first, one item per criterion, resend
   // the entire list every time.
@@ -333,6 +345,7 @@ export function describe(name, args) {
     case 'list_dir':   return `ls ${args.path ?? '.'}`;
     case 'search':     return `search /${args.pattern}/ in ${args.path ?? '.'}`;
     case 'bash':       return `bash: ${args.cmd}`;
+    case 'bash_output': return `${args.kill ? 'kill' : 'output of'} ${args.id}`;
     case 'set_plan':   return `plan: ${args.items?.length ?? 0} items`;
     case 'task':       return `task ${args.agent ?? 'explore'}: ${String(args.prompt ?? '').split('\n')[0]}`;
     default:           return `${name}(${JSON.stringify(args)})`;
@@ -448,6 +461,107 @@ export function resolveSandbox({ platform = process.platform, env = process.env 
 }
 
 /**
+ * Background jobs: commands that outlived their timeout and were left running.
+ *
+ * `out`/`err` behind a job's snapshot are the same tail-capped buffers `runBash`
+ * keeps (MAX_CAPTURE each), so a chatty job cannot grow without bound; the
+ * running totals let a read say how much fell off the front between two looks.
+ */
+const MAX_JOBS = 8;
+const jobs = new Map();
+let nextJob = 1;
+let cleanupArmed = false;
+
+const runningJobs = () => [...jobs.values()].filter((j) => !j.done).length;
+
+function addJob(j) {
+  const job = { ...j, id: `bg${nextJob++}`, done: false, code: null, signal: null,
+    ended: null, note: null, outRead: 0, errRead: 0 };
+  job.closed = new Promise((r) => { job.settle = r; });
+  jobs.set(job.id, job);
+  return job;
+}
+
+function finishJob(job, code, signal, note = null) {
+  job.done = true;
+  job.code = code;
+  job.signal = signal;
+  job.note = note;
+  job.ended = Date.now();
+  job.settle();
+}
+
+/** Kill every background job. Called on exit, on /exit and on /clear. */
+export function killAllJobs() {
+  for (const j of jobs.values()) if (!j.done) j.killTree('SIGKILL');
+  jobs.clear();
+}
+
+/** Number of jobs still running. */
+export const backgroundJobs = () => runningJobs();
+
+function armExitCleanup() {
+  if (cleanupArmed) return;
+  cleanupArmed = true;
+  process.on('exit', killAllJobs);
+  // Closing the terminal must not leave builds running. Re-raise so the default
+  // action still ends the process.
+  for (const sig of ['SIGHUP', 'SIGTERM']) {
+    process.once(sig, () => { killAllJobs(); process.kill(process.pid, sig); });
+  }
+}
+
+/** The part of a stream's buffer the model has not seen yet. */
+function unread(buf, total, read) {
+  const start = total - buf.length;          // total offset of buf[0]
+  return { text: buf.slice(Math.max(0, read - start)), dropped: Math.max(0, start - read) };
+}
+
+/**
+ * Read a background job: new output since the last read, and its status.
+ * With `kill`, stop it first. A finished job is forgotten once its final
+ * output has been handed over.
+ */
+export async function readJob(id, { kill = false } = {}) {
+  const job = jobs.get(String(id ?? '').trim());
+  if (!job) {
+    const known = [...jobs.keys()].join(', ');
+    return `error: no background job "${id}"${known ? ` (known: ${known})` : ' (none running)'}`;
+  }
+  if (kill && !job.done) {
+    job.killTree('SIGKILL');
+    await Promise.race([job.closed, new Promise((r) => setTimeout(r, 2000))]);
+  }
+  const snap = job.snapshot();
+  const o = unread(snap.out, snap.outTotal, job.outRead);
+  const e = unread(snap.err, snap.errTotal, job.errRead);
+  job.outRead = snap.outTotal;
+  job.errRead = snap.errTotal;
+
+  const secs = (((job.ended ?? Date.now()) - job.started) / 1000).toFixed(1);
+  let status;
+  if (!job.done) status = `still running (${secs}s so far)`;
+  else if (job.note) status = `failed — ${job.note}`;
+  else if (job.signal) status = `killed by ${job.signal} after ${secs}s`;
+  else status = `exited with code ${job.code} after ${secs}s`;
+
+  // The cwd marker is printed by the EXIT trap; a background job must not move
+  // the session, so it is stripped and not applied.
+  const cut = o.text.lastIndexOf(MARK);
+  const body = (cut === -1 ? o.text : o.text.slice(0, cut)).replace(/\n$/, '');
+  const dropped = o.dropped + e.dropped;
+  const text = [
+    `job ${job.id}: ${status}`,
+    dropped && `[${dropped} characters of earlier output were dropped to stay under the cap]`,
+    body.trim() && `new stdout:\n${body.trim()}`,
+    e.text.trim() && `new stderr:\n${e.text.trim()}`,
+    !body.trim() && !e.text.trim() && '(no new output)',
+  ].filter(Boolean).join('\n');
+  if (job.done) jobs.delete(job.id);
+  return clip(text);
+}
+
+/**
  * Run a shell command, streaming progress to `onProgress` as it goes.
  *
  * `execFile` buffers silently, so a ten-minute build looked identical to a
@@ -455,7 +569,7 @@ export function resolveSandbox({ platform = process.platform, env = process.env 
  * infamous `exit code ?`. Spawning directly gives us live output, the real
  * signal, and whatever the command managed to print before it died.
  */
-export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
+export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     // Own process group: killing bash alone leaves its children running and
@@ -493,8 +607,12 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
       catch { try { child.kill(sig); } catch { /* already gone */ } }
     };
 
+    let onProgress = progress;
     let out = '';
     let err = '';
+    let outTotal = 0;          // characters ever seen, so a job can tell what was dropped
+    let errTotal = 0;
+    let job = null;            // set once a timeout moves this command to the background
     let truncated = false;
     let lines = 0;
     let produced = 0;          // total bytes the command has emitted
@@ -502,6 +620,7 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
     const take = (chunk, into) => {
       const text = chunk.toString();
       produced += text.length;
+      if (into === 'out') outTotal += text.length; else errTotal += text.length;
       lines += (text.match(/\n/g) ?? []).length;
       if (into === 'out') out += text; else err += text;
       if (out.length + err.length > MAX_CAPTURE) {
@@ -524,10 +643,46 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
     child.stderr.on('data', (d) => take(d, 'err'));
 
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; killTree('SIGKILL'); }, timeoutMs);
+    const timer = setTimeout(() => {
+      // Killing a slow build throws away the minutes it already spent, and the
+      // model then re-runs it with the same timeout. Keep it alive and hand back
+      // a handle instead — unless the table is full, where an unbounded number
+      // of forgotten processes is worse than a kill.
+      if (runningJobs() < MAX_JOBS) {
+        const secs = ((Date.now() - started) / 1000).toFixed(1);
+        job = addJob({
+          cmd, started, killTree,
+          snapshot: () => ({ out, err, outTotal, errTotal }),
+        });
+        // What the timeout message below shows counts as already read.
+        job.outRead = outTotal;
+        job.errRead = errTotal;
+        onProgress = null;
+        armExitCleanup();
+        // Without this the pipes keep the event loop alive and the exit hook
+        // that kills background jobs would never get to run.
+        child.unref();
+        child.stdout.unref?.();
+        child.stderr.unref?.();
+        const { body } = applyCwd(out, MARK);
+        const tail = [
+          body.trim() && `stdout:\n${body.trim()}`,
+          err.trim() && `stderr:\n${err.trim()}`,
+        ].filter(Boolean).join('\n\n');
+        return resolve(clip([
+          `note: still running after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s). It was NOT killed — it is job ${job.id} in the background.`,
+          `Call bash_output {"id":"${job.id}"} to read new output and check whether it finished, or {"id":"${job.id}","kill":true} to stop it.`,
+          'Output so far:',
+          tail || '(no output yet)',
+        ].join('\n')));
+      }
+      timedOut = true;
+      killTree('SIGKILL');
+    }, timeoutMs);
 
     child.on('error', (e) => {
       clearTimeout(timer);
+      if (job) { finishJob(job, null, null, e.message); return; }
       // `cwd:`, not `ran in:` — this fires before any output exists, so nothing
       // ever ran and there is no final directory to report. Naming one would be
       // a worse lie than the stale cwd this file otherwise stopped printing.
@@ -536,6 +691,7 @@ export function runBash(cmd, { onProgress, timeoutMs = TOOL_TIMEOUT } = {}) {
 
     child.on('close', (code, signal) => {
       clearTimeout(timer);
+      if (job) { finishJob(job, code, signal); return; }
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       const { body, pwd, escaped } = applyCwd(out, MARK);
       const where = whereLines(pwd, escaped);
@@ -657,6 +813,9 @@ export async function runTool(name, args, opts = {}) {
 
       case 'bash':
         return runBash(args.cmd, opts);
+
+      case 'bash_output':
+        return readJob(args.id, { kill: args.kill === true });
 
       case 'set_plan':
         return setPlan(args.items);

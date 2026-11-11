@@ -13,7 +13,7 @@ import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
-import { resolveSandbox, sandbox } from './tools.js';
+import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
 import { parseArgv } from './argv.js';
 import { resolveApprovalMode, decideApproval } from './approval.js';
 import { deferredPrompt } from './prompt.js';
@@ -651,11 +651,12 @@ async function main() {
     const input = line.trim();
     if (!input) continue;
 
-    if (input === '/exit' || input === '/quit') break;
+    if (input === '/exit' || input === '/quit') { killAllJobs(); break; }
     if (input === '/help') { console.log(HELP); continue; }
     if (input === '/clear') {
       messages.length = 1;
       config.lastUsed = 0;
+      killAllJobs();
       console.log(c.grey('  conversation cleared'));
       continue;
     }

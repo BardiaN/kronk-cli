@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clip, safe, session, runBash, runTool, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
+import { clip, safe, session, runBash, runTool, killAllJobs, backgroundJobs, readJob, applyEdit, preview, describe, TOOLS, NEEDS_APPROVAL, mcpNeedsApproval } from '../src/tools.js';
 
 // realpath, because macOS maps /var onto /private/var and the shell reports the latter
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-tools-')));
@@ -73,11 +73,16 @@ test('cd cannot escape the root', async () => {
   assert.equal(session.cwd, root, 'session cwd must stay inside the launch root');
 });
 
-test('a timeout is reported as such, with partial output', async () => {
+test('a timeout moves the command to the background instead of killing it', async () => {
   const out = await runBash('echo started; sleep 10', { timeoutMs: 400 });
-  assert.match(out, /killed after/);
-  assert.match(out, /timeout 0s|timeout 1s/);
-  assert.match(out, /started/, 'output printed before the kill survives');
+  assert.match(out, /still running after/);
+  assert.match(out, /NOT killed/);
+  assert.match(out, /started/, 'output printed before the timeout survives');
+  const id = out.match(/job (bg\d+)/)[1];
+  assert.equal(backgroundJobs(), 1);
+  killAllJobs();
+  assert.equal(backgroundJobs(), 0);
+  assert.match(await runTool('bash_output', { id }), /no background job/);
 });
 
 test('built-in approval gating covers exactly the mutating tools', () => {
@@ -140,12 +145,6 @@ test('an in-root cd still persists to the next call', async () => {
 test('a command that replaces its own shell reports the directory as unknown', async () => {
   const out = await runBash('exec false');
   assert.match(out, /^ran in: .+ \(final directory unknown\)$/m);
-});
-
-test('a timeout says where the command was running', async () => {
-  const out = await runBash('sleep 5', { timeoutMs: 100 });
-  assert.match(out, /error: killed after/);
-  assert.match(out, /^ran in: /m);
 });
 
 test('where it ran is printed before the output blocks, not after', async () => {
@@ -248,4 +247,68 @@ test('edit_file validates its arguments and refuses non-UTF-8 files', async () =
   writeFileSync(join(root, 'bin.dat'), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
   assert.match(await runTool('edit_file', { path: 'bin.dat', old_string: 'a', new_string: 'z' }), /not valid UTF-8/);
   assert.deepEqual(readFileSync(join(root, 'bin.dat')), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
+});
+
+test('bash_output returns only new output, then the exit status', async () => {
+  const out = await runBash('echo one; sleep 0.6; echo two', { timeoutMs: 200 });
+  const id = out.match(/job (bg\d+)/)[1];
+  assert.match(out, /one/);
+  const mid = await runTool('bash_output', { id });
+  assert.match(mid, /still running/);
+  assert.match(mid, /\(no new output\)/, 'one was already handed over');
+  await new Promise((r) => setTimeout(r, 900));
+  const end = await runTool('bash_output', { id });
+  assert.match(end, /exited with code 0/);
+  assert.match(end, /two/);
+  assert.doesNotMatch(end, /one/);
+  assert.doesNotMatch(end, /__KRONK_CWD__/);
+  assert.match(await runTool('bash_output', { id }), /no background job/, 'forgotten once reported');
+});
+
+test('bash_output reports a non-zero exit', async () => {
+  const out = await runBash('sleep 0.4; echo bad >&2; exit 3', { timeoutMs: 100 });
+  const id = out.match(/job (bg\d+)/)[1];
+  await new Promise((r) => setTimeout(r, 700));
+  const end = await readJob(id);
+  assert.match(end, /exited with code 3/);
+  assert.match(end, /bad/);
+});
+
+test('bash_output with kill stops the job and ends the process', async () => {
+  const out = await runBash('sleep 30', { timeoutMs: 100 });
+  const id = out.match(/job (bg\d+)/)[1];
+  const res = await runTool('bash_output', { id, kill: true });
+  assert.match(res, /killed by SIGKILL/);
+  assert.equal(backgroundJobs(), 0);
+});
+
+test('a background job moving the cwd does not move the session', async () => {
+  const out = await runBash('mkdir -p sub; cd sub; sleep 0.4', { timeoutMs: 100 });
+  const id = out.match(/job (bg\d+)/)[1];
+  await new Promise((r) => setTimeout(r, 700));
+  await readJob(id);
+  assert.equal(session.cwd, root);
+});
+
+test('retained output per job is capped and the drop is reported', async () => {
+  const out = await runBash('sleep 0.3; head -c 600000 /dev/zero | tr "\\0" x; echo; echo TAIL', { timeoutMs: 100 });
+  const id = out.match(/job (bg\d+)/)[1];
+  await new Promise((r) => setTimeout(r, 1500));
+  const end = await readJob(id);
+  assert.match(end, /earlier output were dropped/);
+  assert.match(end, /TAIL/);
+});
+
+test('bash_output is ungated and unknown ids are an error, not a crash', async () => {
+  assert.ok(!NEEDS_APPROVAL.has('bash_output'));
+  assert.ok(TOOLS.some((t) => t.function.name === 'bash_output'));
+  assert.match(await runTool('bash_output', { id: 'nope' }), /^error: no background job/);
+});
+
+test('past the job limit a timeout still kills', async () => {
+  for (let i = 0; i < 8; i++) await runBash('sleep 30', { timeoutMs: 50 });
+  assert.equal(backgroundJobs(), 8);
+  const out = await runBash('sleep 30', { timeoutMs: 100 });
+  assert.match(out, /error: killed after/);
+  killAllJobs();
 });

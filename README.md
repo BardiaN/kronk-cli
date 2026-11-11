@@ -856,7 +856,7 @@ Two consequences worth knowing:
 | `/context` | how much of the context window is used |
 | `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
 | `/compact` | replace the conversation with a summary of itself |
-| `/clear` | reset the conversation, keep the model |
+| `/clear` | reset the conversation, keep the model; stops background jobs |
 | `/exit`, `/quit` | quit |
 
 ### Presets
@@ -1217,7 +1217,8 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 | `search` | — | Regex search via ripgrep, falling back to grep |
 | `edit_file` | ✋ | Replace an exact string in an existing file (`replace_all` for every match); fails with the match count if it is absent or ambiguous; shows the removed and added lines first |
 | `write_file` | ✋ | Create a file or replace one wholesale; shows a preview first |
-| `bash` | ✋ | Run a command; shows it first |
+| `bash` | ✋ | Run a command; shows it first. One that outlives its timeout keeps running as a background job |
+| `bash_output` | — | Read a background job's new output and exit status, or kill it |
 | `set_plan` | — | Record the task checklist; replaces the stored one |
 | `task` | — | Delegate one job to a [sub-agent](#sub-agents) with its own context |
 
@@ -1231,6 +1232,9 @@ agent asked for it.
 When the model asks for several `read_file`, `list_dir` or `search` calls in one message, up to
 four run at once. Results still reach the model, and the screen, in the order it asked. Anything
 that writes, runs a command, delegates, or comes from an MCP server runs alone and in order.
+
+`bash_output` is not gated either: it starts nothing, and a kill only ends a process you already
+approved when you approved the `bash` call that began it.
 
 `--yes` and `--auto` skip the prompts; `--deny` goes the other way and refuses every call that
 would have prompted, without asking anyone — see [Autonomous mode](#autonomous-mode). Paths resolve against the session directory and cannot
@@ -1331,8 +1335,20 @@ printed. `capped` means it has already produced more than will be kept, so the n
 climbing and the excess is being discarded rather than silently eating your window.
 
 **Timeout** is 15 minutes (`KRONK_TOOL_TIMEOUT`, in seconds), not the 2 minutes that used to kill
-real builds. The command runs in its own process group, so a timeout kills the whole tree rather
-than leaving orphans holding the pipe open.
+real builds. A command that reaches it is **not killed**: it keeps running in the background, and
+the model gets what it printed so far plus a job id:
+
+```
+  note: still running after 900.0s (timeout 900s). It was NOT killed — it is job bg1 in the background.
+  Call bash_output {"id":"bg1"} to read new output and check whether it finished, or {"id":"bg1","kill":true} to stop it.
+```
+
+The model then calls `bash_output` to read what the job has printed since it last looked, and to
+see its exit status once it ends; `{"id":"bg1","kill":true}` stops it. Each job keeps at most the
+last 400,000 characters per stream (the drop is reported), at most 8 jobs run at once — past that a
+timeout kills, as it used to — and every job is killed when you `/exit`, `/clear`, or the terminal
+closes. A job never changes the session directory. Each command runs in its own process group, so
+killing a job kills the whole tree rather than leaving orphans.
 
 **When it fails**, you get the reason, the duration, the directory, and whatever it printed
 before dying:

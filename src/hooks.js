@@ -70,12 +70,22 @@ export function runHook(hook, payload, { env = process.env, cwd = process.cwd() 
     let child;
     try {
       child = spawn(hook.command, {
-        shell: true, cwd, stdio: ['pipe', 'pipe', 'pipe'],
+        shell: true, cwd, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...env, KRONK_TOOL: payload.tool },
       });
     } catch (e) { return done({ stdout, stderr, error: e.message }); }
 
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, hook.timeoutMs);
+    // Kill the whole group, not just the shell: a grandchild (`a | b`, `npx`)
+    // would otherwise keep the pipes open and 'close' would never fire. The
+    // timer also settles the promise itself, so nothing can hang past it.
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+      finish({ timedOut: true });
+    }, hook.timeoutMs);
     const keep = (cur, d) => (cur.length < MAX_CAPTURE ? cur + d : cur);
     child.stdout.on('data', (d) => { stdout = keep(stdout, d); });
     child.stderr.on('data', (d) => { stderr = keep(stderr, d); });

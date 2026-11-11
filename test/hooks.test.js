@@ -74,3 +74,11 @@ test('runPost: output is ignored, exit 2 becomes a note, result and ok are sent'
   const loud = hooks([], [{ command: node(`${readStdin}console.error(j.result+" ok="+j.ok);process.exit(2)})`) }]);
   assert.equal((await runPost(loud, 'bash', {}, 'error: x')).note, '[hook] error: x ok=false');
 });
+
+test('runHook returns at the timeout even when a grandchild holds the pipes open', async () => {
+  const h = { command: `${node('setTimeout(()=>{},5000)')} | cat`, timeoutMs: 300 };
+  const t = Date.now();
+  const r = await runHook(h, { tool: 'bash', args: {} });
+  assert.equal(r.timedOut, true);
+  assert.ok(Date.now() - t < 2000, 'the hook outlived its timeout');
+});

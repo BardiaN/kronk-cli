@@ -116,6 +116,9 @@ export const config = {
   sandboxReadable: (Array.isArray(file.sandboxReadable) ? file.sandboxReadable : [])
     .filter((p) => typeof p === 'string' && p.trim())
     .map((p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)),
+  // Named prompts, `/<name>` in the REPL — validated and merged with the
+  // prompt directories in src/presets.js.
+  presets: file.presets ?? null,
   lastUsed: 0,
   // The startup scan of the working directory, kept so a sub-agent starts
   // knowing what the project is instead of spending its first two steps on it.

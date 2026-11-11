@@ -22,6 +22,9 @@ import { runSetup, runKronk } from './setup.js';
 import { runRescue } from './rescue.js';
 import { VERSION, parseKronkVersion } from './version.js';
 import { updateStatus } from './update.js';
+import {
+  loadPresets, resolveInvocation, listPresets, commandWord, userPromptsDir, projectPromptsDir,
+} from './presets.js';
 
 // ---- argv -------------------------------------------------------------
 const args = parseArgv(process.argv.slice(2));
@@ -338,6 +341,7 @@ const HELP = `
   ${c.bold('/agents')}          sub-agents you can delegate to with the task tool
   ${c.bold('/tasks [n]')}       sub-agent runs this session; with n, one in full
   ${c.bold('/mcp')}             list attached MCP servers and their tools
+  ${c.bold('/presets')}         saved prompts; run one with /<name> [extra text]
   ${c.bold('/context')}         how much of the context window is used
   ${c.bold('/theme [d|l]')}     dark or light palette, for when the terminal guessed wrong
   ${c.bold('/compact')}         replace the conversation with a summary of itself
@@ -572,6 +576,18 @@ async function main() {
     return a === 'y' || a === 'yes' ? 'yes' : 'no';
   };
 
+  // Read once at startup: a preset edited mid-session takes a restart, which
+  // keeps the shadowed-name warning honest and the dispatch a plain lookup.
+  const { presets, shadowed } = loadPresets({
+    fromConfig: config.presets,
+    userDir: userPromptsDir(),
+    projectDir: projectPromptsDir(process.cwd()),
+  });
+  if (shadowed.length) {
+    console.error(c.yellow(`  presets ignored because a built-in command has the name: ${
+      shadowed.map((n) => `/${n}`).join(', ')}`));
+  }
+
   for (;;) {
     const status = statusLine({
       model: config.model,
@@ -600,7 +616,7 @@ async function main() {
       console.log(c.grey('  conversation cleared'));
       continue;
     }
-    if (input.startsWith('/steps')) {
+    if (commandWord(input) === 'steps') {
       const raw = input.split(/\s+/)[1];
       if (raw !== undefined) {
         config.maxSteps = /^(0|off|none|inf|unlimited)$/i.test(raw) ? Infinity : Number(raw);
@@ -715,9 +731,17 @@ async function main() {
       } catch (e) { console.log(c.red(`  ${e.message}`)); }
       continue;
     }
-    if (input.startsWith('/')) { console.log(c.red(`  unknown command — /help`)); continue; }
+    if (input === '/presets') {
+      const lines = listPresets(presets);
+      console.log(lines.length ? lines.map((l) => `  ${l}`).join('\n')
+        : c.grey('  no presets — see the README, "Presets"'));
+      continue;
+    }
+    // After every built-in, so a preset can never take a command's name.
+    const expanded = resolveInvocation(input, presets);
+    if (input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
 
-    messages.push({ role: 'user', content: input });
+    messages.push({ role: 'user', content: expanded ?? input });
     ac = new AbortController();
     try {
       await runTurn({

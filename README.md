@@ -478,7 +478,7 @@ one.
 
 | Command | |
 |---|---|
-| `kronk-cli rescue "<prompt>" [--role explore\|code] [--model <id>] [-y\|-a] [--steps <n>] [--json]` | Submit. Runs detached; prints a job id and exits immediately — nothing here blocks |
+| `kronk-cli rescue "<prompt>" [--role explore\|code] [--model <id>] [-y\|-a\|--deny] [--steps <n>] [--json]` | Submit. Runs detached; prints a job id and exits immediately — nothing here blocks |
 | `kronk-cli rescue status <id> [--json]` | A snapshot: `queued`, `running (step n)`, `done`, `stopped`, `interrupted` or `failed` |
 | `kronk-cli rescue wait <id> [--json]` | Block until the job reaches one of those last four states, then print its report |
 | `kronk-cli rescue result <id> [--json]` | Print the report. Refuses (exit `4`) with the current state if the job has not finished yet — use `wait` instead of polling `result` in a loop |
@@ -493,7 +493,7 @@ should hear about a bad name immediately, on the process it is still attached to
 that failed twenty minutes later. Leaving `--model` out defers the choice to the job itself, the
 same default the session would otherwise use.
 
-**Without `-y`/`-a`, a tool that needs approval is refused and reported, never auto-allowed.**
+**Without `-y`/`-a`, a tool that needs approval is refused and reported, never auto-allowed.** Add `--deny` to make that explicit: the model is then told that the user's settings deny the tool, rather than that someone said no.
 Nobody is at the prompt a rescue job would otherwise show, so there is no "ask anyway" — a refused
 tool call comes back in the transcript exactly like a human said no, and the job carries on (or
 does not) from there. This is deliberate and does not have a flag to turn it off: delegating a
@@ -740,6 +740,7 @@ same way this run did.
 | `--mcp-list` | — | Show configured MCP servers and their tools, then exit |
 | `-a`, `--auto` | off | Autonomous: auto-approve tools **and** run until the task is done. Implies `--yes` |
 | `-y`, `--yes` | off | Auto-approve `edit_file`, `write_file` and `bash` without the autonomous prompt |
+| `--deny` | off | Refuse every tool call that would show an approval prompt, and tell the model its settings deny that tool so it can try another way. Cannot be combined with `-y` or `-a` (exit 2) |
 | `--no-think` | off | Disable the model's reasoning pass server-side. Much faster |
 | `--no-subagents` | off | Remove the `task` tool, so the model cannot delegate — see [Sub-agents](#sub-agents) |
 | `--no-term-status` | off | Don't set the window title, tab progress or the long-turn bell — see [Terminal status](#terminal-status) |
@@ -889,6 +890,7 @@ with the repository, so read it as you would any other file you cloned.
 | `KRONK_MAX_TOKENS` | the model's profile | Output cap per response. Unset, the selected model's own `max_tokens` decides — `8192` only when its profile sets none |
 | `KRONK_MAX_STEPS` | unlimited | Cap on tool calls per task |
 | `KRONK_THINKING` | `true` | `false` hides reasoning but still generates it |
+| `KRONK_DENY_UNAPPROVED` | — | `1` is the same as `--deny`; an explicit `-y`/`-a` overrides it for that run |
 | `KRONK_NO_THINK` | — | `1` disables reasoning server-side |
 | `KRONK_PRESERVE_THINKING` | `true` | `false` stops pinning earlier think blocks in the prompt |
 | `KRONK_REPLAY_REASONING` | autonomous-only | `true`/`false` overrides the default in either direction — see [What reasoning gets sent back](#what-reasoning-gets-sent-back) |
@@ -931,6 +933,7 @@ with the repository, so read it as you would any other file you cloned.
   "autoCompact": true,
   "compactAt": 0.85,
   "noThink": true,
+  "denyUnapproved": true,
   "preserveThinking": true,
   "replayReasoning": true,
   "subagentModel": "Qwen3.6-4B",
@@ -1229,7 +1232,8 @@ When the model asks for several `read_file`, `list_dir` or `search` calls in one
 four run at once. Results still reach the model, and the screen, in the order it asked. Anything
 that writes, runs a command, delegates, or comes from an MCP server runs alone and in order.
 
-`--yes` and `--auto` skip the prompts. Paths resolve against the session directory and cannot
+`--yes` and `--auto` skip the prompts; `--deny` goes the other way and refuses every call that
+would have prompted, without asking anyone — see [Autonomous mode](#autonomous-mode). Paths resolve against the session directory and cannot
 escape the launch root — including through a symlink. `bash` additionally runs under an OS
 sandbox where one is available; see [Scope](#scope) for exactly what that covers. `bash` keeps its working directory **between calls**, so a bare `cd`
 sticks the way it would in a real shell.
@@ -1659,6 +1663,13 @@ still runs, on the same fallback as no `model` at all, with a note saying so in 
 `--auto`, or `/auto` in the REPL, swaps in a system prompt that tells the model to finish the
 whole task — write code, **run** it, read the failure, fix it — and never claim success it has
 not executed. Tools are auto-approved and the run continues as long as the task needs.
+
+For an unattended run that should never write or execute anything, `--deny` (config
+`"denyUnapproved": true`, or `KRONK_DENY_UNAPPROVED=1`) is the opposite: every call that would show
+an approval prompt is refused immediately, and the model is told its settings deny that tool, so it
+carries on another way instead of stalling or asking again. It cannot be combined with `-y` or
+`-a` on the command line (exit 2); an explicit `-y`/`-a` does override the config or environment
+default. It applies to sub-agents too, and `/auto` is unavailable while it is set.
 
 ```console
 $ kronk-cli --auto "write a CSV stats script, add a node:test, run it, fix what breaks"

@@ -8,6 +8,8 @@
  * option looked at its neighbour and happily took the prompt as a model id.
  */
 
+import { resolveApprovalMode } from './approval.js';
+
 /**
  * The one place that knows how an option is spelled. Both the parser and the
  * "did you mean" suggestion read from it, so a new option cannot be understood
@@ -29,6 +31,7 @@ const SPECS = [
   { names: ['--no-term-status'], kind: 'flag', key: 'noTermStatus' },
   { names: ['-a', '--auto'], kind: 'flag', key: 'auto' },
   { names: ['-y', '--yes'], kind: 'flag', key: 'yes' },
+  { names: ['--deny'], kind: 'flag', key: 'deny' },
   { names: ['--dry-run'], kind: 'flag', key: 'dryRun' },
   { names: ['-m', '--model'], kind: 'value', key: 'model' },
   { names: ['--steps'], kind: 'value', key: 'steps' },
@@ -112,7 +115,7 @@ export function parseArgv(argv) {
     help: false, version: false, models: false, mcpList: false,
     noContext: false, noCompact: false, noWarm: false, noThink: false,
     noSubagents: false, noTermStatus: false,
-    auto: false, yes: false, dryRun: false,
+    auto: false, yes: false, deny: false, dryRun: false,
     model: null,
     context: null,
     steps: null,
@@ -167,6 +170,11 @@ export function parseArgv(argv) {
       continue;
     }
     out[spec.key] = next;
+  }
+
+  // After the loop so the order of the two flags does not matter.
+  if (out.deny && (out.yes || out.auto)) {
+    return fail(resolveApprovalMode({ deny: true, yes: out.yes, auto: out.auto }).error);
   }
 
   return out;

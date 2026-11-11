@@ -8,6 +8,7 @@ import { chatModels, pickDefault } from './boot.js';
 import { resolveModel } from './resolve.js';
 import { AGENTS, subagentTools, systemFor } from './subagent.js';
 import { runTurn } from './agent.js';
+import { decideApproval, resolveApprovalMode } from './approval.js';
 import { projectContext } from './context.js';
 import {
   ROOT, TERMINAL, createJob, readJob, recordStep, markRunning, markDone, markStopped,
@@ -133,6 +134,11 @@ async function submitCmd(prompt, args) {
   const job = createJob({
     role, prompt, model,
     yes: args.yes, auto: args.auto,
+    // The configured default counts too: the record says what the job was
+    // submitted as, whatever the worker's environment looks like later.
+    deny: resolveApprovalMode({
+      yes: args.yes, auto: args.auto, deny: args.deny, denyDefault: config.denyUnapproved,
+    }).mode === 'deny',
     // `JSON.stringify(Infinity)` is `null`, so the "unlimited" a bare
     // `--steps off` produces (src/argv.js) cannot ride through the record
     // file as the number it is on the way in — it needs a shape that
@@ -235,7 +241,8 @@ export async function runWorker(id) {
       { role: 'user', content: job.prompt },
     ];
 
-    const approve = async () => job.yes || job.auto;
+    // A record from before `deny` existed has none; it gets the plain refusal.
+    const approve = async () => decideApproval(job.yes || job.auto ? 'allow' : (job.deny ? 'deny' : 'ask')) ?? false;
     const grant = async () => ((job.yes || job.auto) ? 'yes' : 'no');
 
     const done = await runTurn({

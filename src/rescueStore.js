@@ -96,14 +96,14 @@ export function newId() {
 }
 
 /** A job as first written: queued, nothing run yet. */
-export function createJob({ role, prompt, model = null, yes = false, auto = false, maxSteps = null }) {
+export function createJob({ role, prompt, model = null, yes = false, auto = false, deny = false, maxSteps = null }) {
   // Outside flush()'s catch on purpose: a store that cannot be private should
   // fail the submit out loud, not hand back an id that will never resolve.
   ensureDir();
   const id = newId();
   return flush({
     id, role, prompt, model,
-    yes: Boolean(yes), auto: Boolean(auto), maxSteps,
+    yes: Boolean(yes), auto: Boolean(auto), deny: Boolean(deny), maxSteps,
     state: 'queued',
     pid: null,
     steps: 0,

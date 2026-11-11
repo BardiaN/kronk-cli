@@ -257,3 +257,23 @@ test('without --yes, a role that could write is still refused when it tries to â
   const toolResult = record.messages.find((m) => m.role === 'tool');
   assert.match(toolResult.content, /denied/, 'a write with nobody to ask must be refused, not silently run');
 });
+
+test('--deny tells the model its settings refuse the tool, and the job carries on', async (t) => {
+  const stub = await stubFor(t, {
+    ids: ['stub/small'],
+    turns: [
+      { tool: ['write_file', { path: 'x.txt', content: 'hi' }] },
+      { text: 'could not write it' },
+    ],
+  });
+  const { env, rescueDir } = newEnv(stub.url);
+  const id = await submit(env, ['write a file', '--role', 'code', '--deny']);
+
+  const { record } = await pollUntilTerminal(rescueDir, id);
+  stub.close();
+
+  assert.equal(record.state, 'done');
+  assert.equal(record.deny, true);
+  const toolResult = record.messages.find((m) => m.role === 'tool');
+  assert.match(toolResult.content, /settings deny write_file without approval/);
+});

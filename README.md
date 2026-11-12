@@ -94,7 +94,7 @@ sudo unshare --net bash -c 'ip link set lo up; kronk-cli --models'
 CI runs exactly this on every pull request against a stub server, and a second step proves the
 namespace was really isolated so a pass cannot be a false negative.
 
-Or just read `src/` — it is under 1,500 lines with no dependencies, and every network call goes
+Or just read `src/` — it is about 8,500 lines of JavaScript in `src/*.js` with no dependencies, and every network call goes
 through one function in `src/client.js`.
 
 ---
@@ -887,9 +887,35 @@ Two consequences worth knowing:
 
 `/file shot.png` reads the image (PNG, JPEG, WebP or GIF, up to 10 MB, inside the launch
 root like `read_file`) and attaches it to your next message as an OpenAI `image_url` content
-part. The type is detected from the file's bytes, not its extension. It needs a vision model
+part. The type is detected from the file's bytes, not its extension.
+
+The argument is forgiving about how a path was typed: one pair of surrounding quotes is
+stripped (`/file "Screenshot 2026-11-03 at 19.51.21"`), `~/` means your home directory, and a
+name with no image extension also tries `.png`, `.jpg`, `.jpeg`, `.webp` and `.gif` (macOS hides
+`.png` on screenshots). macOS screenshot names contain a narrow no-break space (U+202F) before
+AM/PM; a typed plain space matches it. Each guess is used only when exactly one file fits, and
+`/file` says which it used. A path that is not found is reported with the absolute path tried,
+the launch folder relative paths resolve against, and a same-named file one folder down
+(`Desktop/...`) as a suggestion only. A file that is neither an image nor UTF-8 text is refused
+rather than pasted into the conversation. Every path must stay inside the launch root.
+
+`/file` also works anywhere in a line, any number of times:
+`in this /file "Screenshot 2026-11-03 at 19.51.21" what do you see?`. The argument is a quoted
+string (`\"` inside double quotes is a quote) or, unquoted, the longest run of up to eight
+following words that names a file (`/file my notes.txt explain it` works when `my notes.txt`
+exists). Images ride with that message, text files are added as context, and the prompt the
+model reads has each reference replaced by `[image: name]` or `[file: name]`. If any reference
+fails, the errors are printed and nothing is sent. A line that is only `/file <path>` still just
+attaches and waits for your next message. To type a literal `/file`, write `\/file`. Lines typed
+while a task is running (steering) are sent as plain text; `/file` is not expanded in them. It needs a vision model
 (one Kronk serves with a multimodal projector); kronk-cli sends the image regardless and
-prints a note if Kronk returns an error. `/context` and `/compact` count and summarize an
+prints a note if Kronk returns an error.
+
+The model can also open an image itself: `read_file` on a file whose bytes are an image (same
+launch-root check and 10 MB cap) answers "image attached" and the harness follows the round's
+tool results with a user message carrying the image, because a chat tool message cannot hold
+one. Sub-agents get the same. Ask "what is in the file 'Screenshot 2026-11-03 at 19.51.21'?"
+and the model can read it without `/file`. `/context` and `/compact` count and summarize an
 image as `[image: name.png]`, never as its base64.
 
 ## REPL commands
@@ -902,7 +928,7 @@ instead — see [Steering a running task](#steering-a-running-task).
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
 | `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
-| `/file <path>` | add a file to the conversation as context; a `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` is attached to your next message as an image (see [Images](#images)) |
+| `/file <path>` | add a file to the conversation as context (also usable inside a sentence); an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |
@@ -1325,7 +1351,7 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 
 | Tool | Approval | |
 |---|---|---|
-| `read_file` | — | Read a UTF-8 file |
+| `read_file` | — | Read a UTF-8 file; a PNG, JPEG, WebP or GIF is shown to a vision model as an image (see [Images](#images)) |
 | `list_dir` | — | List a directory |
 | `search` | — | Regex search via ripgrep, falling back to grep |
 | `edit_file` | ✋ | Replace an exact string in an existing file (`replace_all` for every match); fails with the match count if it is absent or ambiguous; shows the removed and added lines first |

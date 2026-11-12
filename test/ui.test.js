@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtContext, fmtUsage, statusLine, toolResultLines } from '../src/ui.js';
+import { fmtContext, fmtUsage, statusLine, toolResultLines, contextLines } from '../src/ui.js';
 import { PALETTES, useTheme } from '../src/theme.js';
 
 // eslint-disable-next-line no-control-regex -- stripping ANSI is the point
@@ -169,4 +169,13 @@ test('with colour off the line carries no escapes at all', () => {
   useTheme({ name: 'dark', colors: 0 });
   const line = statusLine(STATUS);
   assert.equal(line, strip(line));
+});
+
+test('contextLines counts tool schemas and images, and labels estimate vs measured', () => {
+  const lines = contextLines({ messageTokens: 3000, toolTokens: 2000, images: 2, measured: 9000, window: 131072, native: null, messages: 4 }).map(strip);
+  assert.match(lines[0], /6\.5k\/131k .*estimate/, '3000 + 2000 + 2 * 768');
+  assert.match(lines[1], /tool schemas 2\.0k/);
+  assert.match(lines[1], /2 images ~1\.5k \(a guess\)/);
+  assert.match(lines[2], /9\.0k\/131k .*measured by the server/);
+  assert.equal(contextLines({ messageTokens: 1, toolTokens: 1, window: 100, messages: 1 }).map(strip).filter((l) => /measured/.test(l)).length, 0);
 });

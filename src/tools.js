@@ -8,6 +8,7 @@ import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
+import { loadImage, IMAGE_NOT_SHOWN } from './image.js';
 
 const exec = promisify(execFile);
 export const MAX_OUT = 30_000;
@@ -218,7 +219,7 @@ export const def = (name, description, properties, required) => ({
 });
 
 export const TOOLS = [
-  def('read_file', 'Read a UTF-8 text file relative to the working directory.',
+  def('read_file', 'Read a UTF-8 text file relative to the working directory. A PNG, JPEG, WebP or GIF (10 MB at most) is shown to you as an image instead, if your model can see.',
     { path: { type: 'string' } }, ['path']),
 
   def('write_file', 'Create a new text file, or replace one wholesale. To change part of an existing file use edit_file. Requires user approval.',
@@ -311,6 +312,10 @@ export function applyEdit(text, oldStr, newStr, replaceAll = false) {
   // Checked because split().join(undefined) would insert a literal ",".
   if (typeof newStr !== 'string') return { error: 'new_string must be a string (use an empty string to delete the matched text)' };
   if (oldStr === newStr) return { error: 'old_string and new_string are identical, so nothing would change' };
+  // A CRLF file read by the model and quoted back with LF endings would never
+  // match verbatim. Match with `\r?\n` per newline and write the replacement
+  // in the endings of what it replaced, so untouched lines are never rewritten.
+  if (text.includes('\r')) return applyEditEol(text, oldStr, newStr, replaceAll);
   const count = text.split(oldStr).length - 1;
   if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
   if (count > 1 && !replaceAll) {
@@ -318,6 +323,24 @@ export function applyEdit(text, oldStr, newStr, replaceAll = false) {
   }
   // split/join rather than String.replace, so `$&` in new_string stays literal.
   return { text: text.split(oldStr).join(newStr), count };
+}
+
+function applyEditEol(text, oldStr, newStr, replaceAll) {
+  const pattern = oldStr.replace(/\r\n/g, '\n').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\n/g, '\r?\n');
+  const re = new RegExp(pattern, 'g');
+  const count = [...text.matchAll(re)].length;
+  if (count === 0) return { error: 'old_string was not found in the file (0 matches); re-read the file and copy the text exactly, whitespace included' };
+  if (count > 1 && !replaceAll) {
+    return { error: `old_string matches ${count} places; add surrounding lines to make it unique, or set replace_all to true` };
+  }
+  const lf = newStr.replace(/\r\n/g, '\n');
+  // No newline in the match: follow the file, but only when it is all CRLF.
+  const fileCrlf = /\r\n/.test(text) && !/(^|[^\r])\n/.test(text);
+  const out = text.replace(re, (m) => {
+    const crlf = m.includes('\n') ? m.includes('\r\n') : fileCrlf;
+    return crlf ? lf.replace(/\n/g, '\r\n') : lf;
+  });
+  return { text: out, count };
 }
 
 export function preview(name, args) {
@@ -543,8 +566,14 @@ function finishJob(job, code, signal, note = null) {
   }
 }
 
-/** Kill every background job. Called on exit, on /exit and on /clear. */
+/** Kill functions of the foreground commands running right now. */
+const foreground = new Set();
+const INTERRUPT_GRACE_MS = 2000;
+
+/** Kill every background job and any foreground command. Called on exit, on /exit and on /clear. */
 export function killAllJobs() {
+  for (const kill of foreground) kill('SIGKILL');
+  foreground.clear();
   for (const j of jobs.values()) if (!j.done) j.killTree('SIGKILL');
   jobs.clear();
   discarded.clear();
@@ -649,9 +678,10 @@ export async function readJob(id, { kill = false, waitMs = 0, signal } = {}) {
  * infamous `exit code ?`. Spawning directly gives us live output, the real
  * signal, and whatever the command managed to print before it died.
  */
-export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } = {}) {
+export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT, signal } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
+    if (signal?.aborted) return resolve('error: interrupted before it started (Ctrl-C); the command was not run.');
     // Own process group: killing bash alone leaves its children running and
     // holding the stdout pipe open, so `close` would not fire until they
     // finished anyway — a 5s timeout that returned after 30s.
@@ -686,6 +716,26 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       try { process.kill(-child.pid, sig); }
       catch { try { child.kill(sig); } catch { /* already gone */ } }
     };
+
+    // Ctrl-C: the command runs in its own process group, so the terminal's
+    // SIGINT never reaches it. Stop it ourselves — politely, then for good.
+    let interrupted = false;
+    let hardKill = null;
+    const onAbort = () => {
+      if (job) return;           // a background job outlives the turn that started it
+      interrupted = true;
+      killTree('SIGTERM');
+      hardKill = setTimeout(() => killTree('SIGKILL'), INTERRUPT_GRACE_MS);
+    };
+    const release = () => {
+      signal?.removeEventListener('abort', onAbort);
+      foreground.delete(killTree);
+      clearTimeout(hardKill);
+    };
+    // Exit, SIGHUP and SIGTERM must not leave this command running either.
+    foreground.add(killTree);
+    armExitCleanup();
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     let onProgress = progress;
     let out = '';
@@ -745,7 +795,8 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
         job.outRead = outTotal;
         job.errRead = errTotal;
         onProgress = null;
-        armExitCleanup();
+        signal?.removeEventListener('abort', onAbort);
+        foreground.delete(killTree);
         // Without this the pipes keep the event loop alive and the exit hook
         // that kills background jobs would never get to run.
         child.unref();
@@ -769,6 +820,7 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
 
     child.on('error', (e) => {
       clearTimeout(timer);
+      release();
       if (job) { finishJob(job, null, null, e.message); return; }
       // `cwd:`, not `ran in:` — this fires before any output exists, so nothing
       // ever ran and there is no final directory to report. Naming one would be
@@ -776,9 +828,10 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       resolve(`error: could not start command — ${e.message}\ncwd: ${session.cwd}`);
     });
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code, sig) => {
       clearTimeout(timer);
-      if (job) { finishJob(job, code, signal); return; }
+      if (job) { finishJob(job, code, sig); return; }
+      release();
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       const { body, pwd, escaped } = applyCwd(out, MARK);
       const where = whereLines(pwd, escaped);
@@ -792,6 +845,13 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
       // reader never sees.
       const hint = credentialHint(cmd);
 
+      if (interrupted) {
+        return resolve(clip([
+          `error: interrupted by the user (Ctrl-C) after ${secs}s; the command was stopped.`,
+          ...where,
+          tail || '(no output before it was interrupted)',
+        ].filter(Boolean).join('\n')));
+      }
       if (timedOut) {
         return resolve(clip([
           `error: killed after ${secs}s (timeout ${Math.round(timeoutMs / 1000)}s).`,
@@ -810,8 +870,8 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
         return resolve(escaped ? `${where.join('\n')}\n${text}` : text);
       }
       return resolve(clip([
-        signal
-          ? `error: killed by ${signal} after ${secs}s`
+        sig
+          ? `error: killed by ${sig} after ${secs}s`
           : `error: exit code ${code} after ${secs}s`,
         ...where,
         hint,
@@ -825,8 +885,18 @@ export function runBash(cmd, { onProgress: progress, timeoutMs = TOOL_TIMEOUT } 
 export async function runTool(name, args, opts = {}) {
   try {
     switch (name) {
-      case 'read_file':
+      case 'read_file': {
+        // Bytes decide, not the name: macOS screenshots have no extension.
+        const img = opts.images ? await loadImage(args.path, { optional: true }) : null;
+        if (img && opts.vision === false) {
+          return `${IMAGE_NOT_SHOWN} ${args.path} is an image (${img.mime}, ${img.bytes.toLocaleString()} bytes) but the active model has no vision support, so it could not be shown. Do not describe or guess its contents; tell the user the image could not be viewed and that a vision model is needed.`;
+        }
+        if (img) {
+          opts.images.push(img.part);
+          return `image attached: ${args.path} (${img.mime}, ${img.bytes.toLocaleString()} bytes). It follows this result as a user message.`;
+        }
         return clip(await readFile(safe(args.path), 'utf8'));
+      }
 
       case 'write_file':
         await writeFile(safe(args.path), args.content ?? '');

@@ -9,8 +9,25 @@ import { parseHooks } from './hooks.js';
 const RC = process.env.KRONK_CONFIG ?? join(homedir(), '.kronk-cli.json');
 const MODEL_CONFIG = join(homedir(), '.kronk', 'models', 'model_config.yaml');
 
+/** Problems found while reading the config file, printed once at startup. */
+export const configProblems = [];
+
 function fileConfig() {
-  try { return JSON.parse(readFileSync(RC, 'utf8')); } catch { return {}; }
+  let text;
+  try { text = readFileSync(RC, 'utf8'); }
+  catch (e) {
+    // No file is the normal state of a fresh install; anything else is not.
+    if (e.code !== 'ENOENT') configProblems.push(`could not read ${RC} (${e.message}). Nothing from it is active.`);
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    configProblems.push(`${RC} must hold a JSON object. Nothing from it is active: hooks, presets and settings use their defaults.`);
+  } catch (e) {
+    configProblems.push(`${RC} is not valid JSON (${e.message}). Hooks, presets and settings from it are NOT active; defaults are used. Fix the file and restart.`);
+  }
+  return {};
 }
 
 const file = fileConfig();
@@ -193,6 +210,17 @@ export function warnIfInsecure(warn = console.error) {
   warn('  File contents and command output will cross the network in clear text.');
   warn('  Use https, or an SSH tunnel to keep the endpoint on localhost.');
   return true;
+}
+
+/** Print what was wrong with the config file, once, at startup. */
+export function warnConfigProblems(warn = console.error) {
+  const problems = [...configProblems];
+  const dropped = config.hooks?.dropped ?? 0;
+  if (dropped) {
+    problems.push(`${dropped} hook ${dropped === 1 ? 'entry' : 'entries'} in ${RC} ignored: each needs a non-empty "command" string and a "match" that is a valid regular expression.`);
+  }
+  for (const p of problems) warn(`  warning: ${p}`);
+  return problems.length;
 }
 
 export const headers = () => ({

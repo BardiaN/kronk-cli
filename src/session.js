@@ -124,6 +124,45 @@ export function findSession(cwd, id, opts) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+/**
+ * Session files in this launch folder that exist but cannot be used (not JSON,
+ * wrong shape). `listSessions` skips them silently; `--resume` should not.
+ */
+export function unreadableSessions(cwd = process.cwd(), { root = ROOT() } = {}) {
+  let names;
+  try { privateDir(root, { create: false }); names = readdirSync(dirFor(cwd, root)); } catch { return []; }
+  return names
+    .filter((n) => n.endsWith('.json'))
+    .map((n) => join(dirFor(cwd, root), n))
+    .filter((f) => read(f) === null);
+}
+
+/**
+ * The folder a session id was saved under, when it is not `cwd`: an exact id or
+ * a unique prefix, looked up across every launch folder. Null when nothing (or
+ * more than one session) matches. `folder` is null for a record written before
+ * the folder was stored.
+ */
+export function sessionElsewhere(cwd, id, { root = ROOT() } = {}) {
+  if (!id) return null;
+  let dirs;
+  try { privateDir(root, { create: false }); dirs = readdirSync(root); } catch { return null; }
+  const hits = [];
+  for (const d of dirs) {
+    if (d === dirKey(cwd)) continue;
+    let names;
+    try { names = readdirSync(join(root, d)); } catch { continue; }
+    for (const n of names) {
+      if (!n.endsWith('.json')) continue;
+      const r = read(join(root, d, n));
+      if (r && r.id.startsWith(id)) hits.push(r);
+    }
+  }
+  const exact = hits.filter((r) => r.id === id);
+  const pick = exact.length ? exact : hits;
+  return pick.length === 1 ? { id: pick[0].id, folder: typeof pick[0].cwd === 'string' ? pick[0].cwd : null } : null;
+}
+
 /** Delete everything past the newest `keep`. Returns how many went. */
 export function prune(cwd, { root = ROOT(), keep = KEEP } = {}) {
   const dir = dirFor(cwd, root);

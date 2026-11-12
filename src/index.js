@@ -677,7 +677,7 @@ async function main() {
     if (verdict !== null) return verdict;
     term.approval();
     let a;
-    try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase(); }
+    try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `), { fresh: true })).trim().toLowerCase(); }
     finally { term.working(); }
     return a === 'y' || a === 'yes';
   };
@@ -690,7 +690,7 @@ async function main() {
     console.log(c.yellow(`  ${readPromptHead(root, path)}`));
     term.approval();
     let a;
-    try { a = await rl.question(c.yellow(`  ${readPromptChoices(folder, wide)}`)); }
+    try { a = await rl.question(c.yellow(`  ${readPromptChoices(folder, wide)}`), { fresh: true }); }
     finally { term.working(); }
     return parseReadAnswer(a, Boolean(folder));
   };
@@ -708,7 +708,7 @@ async function main() {
     term.approval();
     let a;
     try {
-      a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] ')))
+      a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] '), { fresh: true }))
         .trim().toLowerCase();
     } finally { term.working(); }
     if (a === 'always' || a === 'a') return 'always';

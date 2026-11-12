@@ -57,10 +57,25 @@ export function deferredPrompt({ input, output, historySize = 500, onSigint } = 
      * Ask, opening the interface if this is the first time. A line that was
      * typed ahead answers immediately — echoed after the prompt, so the
      * transcript reads the way it would have if the timing had been kinder.
+     * With `fresh`, nothing typed ahead can answer: see below.
      */
-    question(query) {
+    question(query, { fresh = false } = {}) {
       if (closed) return Promise.reject(new PromptClosed());
       const reader = open();
+      if (fresh) {
+        // A yes/no that guards something. Whatever was typed or pasted before
+        // it was on screen was never an answer to it: park those lines, take
+        // only a line entered afterwards, and give the parked ones back in
+        // order. Without this a pasted "y" on the line after a prompt approved
+        // a write the user had not yet seen.
+        const parked = queued.splice(0);
+        const give = () => queued.unshift(...parked);
+        if (input?.isTTY) reader.write(null, { ctrl: true, name: 'u' });   // half-typed text is not an answer either
+        reader.setPrompt(query);
+        reader.prompt();
+        return new Promise((resolve, reject) => { waiting = { resolve, reject }; })
+          .then((line) => { give(); return line; }, (e) => { give(); throw e; });
+      }
       if (queued.length) {
         const line = queued.shift();
         output.write(`${query}${line}\n`);

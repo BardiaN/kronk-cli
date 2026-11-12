@@ -16,6 +16,8 @@ import { runTurn, SYSTEM } from '../src/agent.js';
 import { runTask } from '../src/subagent.js';
 import { config } from '../src/config.js';
 import { contextLines } from '../src/ui.js';
+import { PassThrough } from 'node:stream';
+import { deferredPrompt } from '../src/prompt.js';
 import { startStub } from './fixtures/kronk-stub.js';
 
 const ROOT = '/work/project';
@@ -440,3 +442,43 @@ test('search treats a pattern that starts with a dash as a pattern, not as an op
   assert.match(await runTool('search', { pattern: '-needle' }), /f\.txt:1:a -needle here/);
   assert.match(await runTool('search', { pattern: '--files' }), /no matches/);
 }));
+
+// ── typed-ahead lines never answer a guarding prompt ──────────────────────────
+
+function pty() {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.on('data', () => {});
+  return { input, output, rl: deferredPrompt({ input, output }) };
+}
+const tick = () => new Promise((r) => setTimeout(r, 20));
+
+test('fresh: lines queued before the question are parked, not taken as the answer', async () => {
+  const { input, rl } = pty();
+  const first = rl.question('› ');
+  input.write('read the file\ny\nnext prompt\n');   // a paste: three lines at once
+  assert.equal(await first, 'read the file');
+  await tick();
+  assert.equal(rl.pending, 2, 'the rest waited in the queue');
+  let settled = false;
+  const answer = rl.question('allow? ', { fresh: true }).then((l) => { settled = true; return l; });
+  await tick();
+  assert.equal(settled, false, 'the pasted y did not answer it');
+  assert.equal(rl.pending, 0, 'parked while the question is open');
+  input.write('n\n');
+  assert.equal(await answer, 'n', 'only a line entered afterwards does');
+  assert.equal(rl.pending, 2, 'and the parked lines are back');
+  assert.equal(await rl.question('› '), 'y', 'in the order they came');
+  assert.equal(await rl.question('› '), 'next prompt');
+  rl.close();
+});
+
+test('without fresh, typing ahead still answers, as it always did', async () => {
+  const { input, rl } = pty();
+  const first = rl.question('› ');
+  input.write('a\nb\n');
+  await first;
+  await tick();
+  assert.equal(await rl.question('› '), 'b');
+  rl.close();
+});

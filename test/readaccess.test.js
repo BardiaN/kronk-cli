@@ -431,3 +431,9 @@ test('readCheck offers no folder for the home folder, and says it is wide', () =
     assert.equal(w.wide, false);
   } finally { process.env.HOME = home; }
 }));
+
+test('search treats a pattern that starts with a dash as a pattern, not as an option', () => world(async ({ root }) => {
+  writeFileSync(join(root, 'f.txt'), 'a -needle here\n');
+  assert.match(await runTool('search', { pattern: '-needle' }), /f\.txt:1:a -needle here/);
+  assert.match(await runTool('search', { pattern: '--files' }), /no matches/);
+}));

@@ -1032,7 +1032,7 @@ export async function runTool(name, args, opts = {}) {
         // than using the fact it was just handed.
         const NOTHING = '(no matches)';
         try {
-          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', ...rgSkip, args.pattern, where]);
+          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', ...rgSkip, '--', args.pattern, where]);
           return clip(stdout) || NOTHING;
         } catch (e) {
           if (e.code === 1) return NOTHING;
@@ -1045,7 +1045,7 @@ export async function runTool(name, args, opts = {}) {
             // grep drops the filename when it is given exactly one file, and
             // this tool promises `file:line` prefixes — BSD grep prints them
             // either way, which is why a macOS-only check would not see it.
-            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', ...grepSkip, args.pattern, where]);
+            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', ...grepSkip, '--', args.pattern, where]);
             return clip(stdout) || NOTHING;
           } catch (err) {
             if (err.code === 1) return NOTHING;

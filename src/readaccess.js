@@ -25,16 +25,20 @@ export function within(child, parent, ci = false) {
  * The credential store `abs` touches, or null. `ci` compares without case, for
  * the filesystems (APFS, NTFS by default) where `.SSH` is `.ssh`.
  *
- * `search` walks a whole tree, so it also touches a store that sits *under* the
- * directory it was pointed at; a read or a listing only touches the path itself
- * (naming the entries of a directory reveals no key material).
+ * Only the store itself or something inside it counts: listing a directory that
+ * merely contains one names an entry and reveals no key material. A `search`
+ * that walks past one is told to leave it out instead (`secretsUnder`).
  */
 export function secretHit(abs, kind, secrets, ci = false) {
   for (const s of secrets) {
     if (within(abs, s, ci)) return s;
-    if (kind === 'search' && within(s, abs, ci)) return s;
   }
   return null;
+}
+
+/** The credential stores that sit strictly below `abs`, for a search to skip. */
+export function secretsUnder(abs, secrets, ci = false) {
+  return secrets.filter((s) => s !== abs && within(s, abs, ci));
 }
 
 /**
@@ -66,8 +70,10 @@ export function decideRead({
   abs, kind = 'read_file', root, folders = [], files = [], once = [],
   declined = [], secrets = [], interactive = false, ci = false,
 }) {
-  if (within(abs, root)) return { action: 'allow', reason: 'inside' };
+  // Before the launch root, not after: launching in the home folder makes
+  // ~/.ssh "inside", and being inside is not a reason to read key material.
   if (secretHit(abs, kind, secrets, ci)) return { action: 'refuse', reason: 'secret' };
+  if (within(abs, root)) return { action: 'allow', reason: 'inside' };
   if (files.includes(abs) || once.includes(abs) || folders.some((f) => within(abs, f))) {
     return { action: 'allow', reason: 'granted' };
   }
@@ -104,7 +110,7 @@ export function refusalText(reason, abs, root) {
       return `the user declined to let you read ${abs}, which is outside the launch folder (${root}). `
         + 'Do not retry this path or ask for it again; carry on without it, or tell the user you could not read it.';
     case 'secret':
-      return `${where} and is a credential store, which is never readable from there, whatever the user allows. `
+      return `${abs} is a credential store, which the file tools never read, wherever you were launched and whatever the user allows. `
         + 'Do not retry it.';
     default:
       return `${where}, and nobody is available to approve reading it. Do not retry this path. `

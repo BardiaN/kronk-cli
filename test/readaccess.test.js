@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  decideRead, within, secretHit, grantFolder, parseReadAnswer, readPromptHead, readPromptChoices, refusalText,
+  decideRead, within, secretHit, secretsUnder, grantFolder, parseReadAnswer, readPromptHead, readPromptChoices, refusalText,
 } from '../src/readaccess.js';
 import {
   runTool, session, readCheck, grantReadFolder, consentFile, readGrantLines, TOOLS,
@@ -71,7 +71,9 @@ test('a credential store is refused before any grant is read', () => {
   assert.equal(decideRead({ ...base, abs: '/home/u/.npmrc', ...grants }).reason, 'secret');
   // A listing names entries and reads nothing; a search walks the tree beneath it.
   assert.equal(decideRead({ ...base, abs: '/home/u', kind: 'list_dir', interactive: true }).action, 'ask');
-  assert.equal(decideRead({ ...base, abs: '/home/u', kind: 'search', interactive: true }).reason, 'secret');
+  assert.equal(decideRead({ ...base, abs: '/home/u', kind: 'search', interactive: true }).action, 'ask');
+  assert.deepEqual(secretsUnder('/home/u', base.secrets), base.secrets, 'a search from there leaves them out');
+  assert.deepEqual(secretsUnder('/home/u/.ssh', base.secrets), [], 'the store itself is refused, not skipped');
   assert.equal(secretHit('/home/u/notes', 'search', base.secrets), null);
 });
 
@@ -229,7 +231,9 @@ test('a credential store stays refused whatever was granted, and reads still can
     assert.match(r, /credential store/);
     assert.doesNotMatch(r, /PRIVATE KEY/);
     assert.match(await runTool('read_file', { path: join(parent, '.npmrc') }), /credential store/);
-    assert.match(await runTool('search', { pattern: 'KEY', path: parent }), /credential store/);
+    // A search from above leaves the store out rather than refusing the lot.
+    assert.doesNotMatch(await runTool('search', { pattern: 'KEY', path: parent }), /PRIVATE|id_test/);
+    assert.match(await runTool('search', { pattern: 'KEY', path: join(parent, '.ssh') }), /credential store/);
     assert.deepEqual(secretPaths(parent).filter((p) => p.endsWith('.ssh')), [join(parent, '.ssh')]);
     // And a grant never reaches a write.
     const w = await runTool('write_file', { path: join(parent, 'Downloads', 'w.txt'), content: 'x' });
@@ -377,4 +381,26 @@ test('~/.SSH/id_rsa, .NPMRC and .NETRC are refused on a case-insensitive disk, w
     }
     assert.equal(readCheck(join(parent, '.SSH', 'id_rsa'), { interactive: true }).reason, 'secret');
   } finally { process.env.HOME = home; }
+}));
+
+test('launched in the home folder, the credential stores are not "inside": refused, while project files read', () => world(async ({ parent }) => {
+  const home = process.env.HOME;
+  process.env.HOME = parent;
+  const saved = { root: session.root, cwd: session.cwd };
+  session.root = parent;
+  session.cwd = parent;
+  try {
+    mkdirSync(join(parent, '.ssh'));
+    writeFileSync(join(parent, '.ssh', 'id_rsa'), 'PRIVATE KEY');
+    writeFileSync(join(parent, '.npmrc'), 'NPM TOKEN');
+    writeFileSync(join(parent, 'notes.txt'), 'KEY notes');
+    assert.equal(await runTool('read_file', { path: '.ssh/id_rsa' }).then((r) => /credential store/.test(r)), true);
+    assert.match(await runTool('read_file', { path: '.npmrc' }), /credential store/);
+    assert.match(await runTool('list_dir', { path: '.ssh' }), /credential store/);
+    assert.equal(await runTool('read_file', { path: 'notes.txt' }), 'KEY notes');
+    assert.match(await runTool('list_dir', { path: '.' }), /notes\.txt/);
+    const found = await runTool('search', { pattern: 'KEY', path: '.' });
+    assert.match(found, /notes\.txt/);
+    assert.doesNotMatch(found, /PRIVATE|id_rsa/, found);
+  } finally { process.env.HOME = home; Object.assign(session, saved); }
 }));

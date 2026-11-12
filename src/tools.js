@@ -5,7 +5,7 @@ import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:pat
 import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs, secretPaths } from './sandbox.js';
-import { decideRead, grantFolder, refusalText } from './readaccess.js';
+import { decideRead, grantFolder, refusalText, secretsUnder } from './readaccess.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
@@ -227,18 +227,25 @@ const untilde = (p) => (p === '~' ? homedir() : String(p).startsWith('~/') ? joi
  *
  * Reads only. `safe()` above stays the gate for every write.
  */
+const CASE_BLIND = process.platform === 'darwin' || process.platform === 'win32';
+
 export function readCheck(p, { kind = 'read_file', allow, interactive = false } = {}) {
   const abs = realDeep(resolve(real(session.cwd), untilde(p)));
   const secrets = secretPaths(homedir()).map(realDeep);
   const verdict = decideRead({
     abs, kind, root: real(session.root), secrets, interactive,
-    ci: process.platform === 'darwin' || process.platform === 'win32',
+    ci: CASE_BLIND,
     folders: [...session.readFolders], files: [...session.readFiles],
     once: allow ? [...allow] : [], declined: [...session.readDeclined],
   });
   let isDir = false;
   try { isDir = statSync(abs).isDirectory(); } catch { /* does not exist */ }
-  return { abs, ...verdict, folder: verdict.action === 'ask' ? grantFolder(abs, kind, isDir) : null };
+  return {
+    abs, ...verdict,
+    // For a search to leave out: stores that sit below the directory it walks.
+    skip: kind === 'search' ? secretsUnder(abs, secrets, CASE_BLIND) : [],
+    folder: verdict.action === 'ask' ? grantFolder(abs, kind, isDir) : null,
+  };
 }
 
 /** The resolved path for a read, or a throw that tells the model what happened. */
@@ -1012,13 +1019,17 @@ export async function runTool(name, args, opts = {}) {
         // Went straight to ripgrep unchecked, so `search` with an absolute path
         // read anything on the machine while read_file was busy refusing to.
         const where = safeRead(args.path ?? '.', { kind: 'search', allow: opts.allowRead });
+        // A search from the home folder walks past ~/.ssh: leave key material out.
+        const { skip } = readCheck(args.path ?? '.', { kind: 'search', allow: opts.allowRead });
+        const rgSkip = skip.flatMap((s) => ['-g', `!${relative(where, s).replace(/[*?[\]{}!\\]/g, '\\$&')}`]);
+        const grepSkip = skip.flatMap((s) => [`--exclude-dir=${basename(s)}`, `--exclude=${basename(s)}`]);
         // Both tools exit 1 to mean "nothing matched", which is an answer and
         // not a failure. Reported as an error the model stops believing the
         // tool, and spends its step budget re-phrasing and re-reading rather
         // than using the fact it was just handed.
         const NOTHING = '(no matches)';
         try {
-          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', args.pattern, where]);
+          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', ...rgSkip, args.pattern, where]);
           return clip(stdout) || NOTHING;
         } catch (e) {
           if (e.code === 1) return NOTHING;
@@ -1031,7 +1042,7 @@ export async function runTool(name, args, opts = {}) {
             // grep drops the filename when it is given exactly one file, and
             // this tool promises `file:line` prefixes — BSD grep prints them
             // either way, which is why a macOS-only check would not see it.
-            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', args.pattern, where]);
+            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', ...grepSkip, args.pattern, where]);
             return clip(stdout) || NOTHING;
           } catch (err) {
             if (err.code === 1) return NOTHING;

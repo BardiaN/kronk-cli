@@ -6,6 +6,33 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.10.0 — 2026-11-11
+
+### Features
+
+- **repl**: attach files with /file anywhere in a prompt ([`086fb0a`](https://github.com/BardiaN/kronk-cli/commit/086fb0ac79917e788424dacae0d1b7211a72dd50))
+- **tools**: let read_file show an image to a vision model ([`152cbb5`](https://github.com/BardiaN/kronk-cli/commit/152cbb5e17680416464d4cfaef27846bbd114123))
+
+### Fixes
+
+- **repl**: /context counts tool schemas and images and labels estimate vs measured ([`db83558`](https://github.com/BardiaN/kronk-cli/commit/db83558d81b60b4460036d84e96220646a3b8e39))
+- **session**: --resume names the folder a session belongs to, and reports corrupt files ([`784b46f`](https://github.com/BardiaN/kronk-cli/commit/784b46f1c528f763f8d28fddb168958bbb62b024))
+- **image**: warn when an image goes to a model without vision ([`cf95088`](https://github.com/BardiaN/kronk-cli/commit/cf9508869d3e5c28f62350a7a9f79f1c1bde4827))
+- **image**: say a 0-byte image path is empty instead of reading it as empty text ([`8d41cad`](https://github.com/BardiaN/kronk-cli/commit/8d41cad22f213cd7381b0dd92670f44d5dfdc1ee))
+- **config**: warn about an unreadable config file, bad hooks and skipped presets ([`b69ab6b`](https://github.com/BardiaN/kronk-cli/commit/b69ab6b66a00bfb010eb4d620160389d70d34ce6))
+- **tools**: no orphaned foreground command on exit, SIGHUP or SIGTERM ([`e07996e`](https://github.com/BardiaN/kronk-cli/commit/e07996ea94b0846c7098e8887a1d1e6cd210edf7))
+- **tools**: Ctrl-C stops a running foreground bash command ([`1546ee1`](https://github.com/BardiaN/kronk-cli/commit/1546ee1faee6c75381ce508a1ce5be5c893fe8e7))
+- **tools**: edit_file matches LF text against CRLF files and keeps their endings ([`eb5985f`](https://github.com/BardiaN/kronk-cli/commit/eb5985fd36a620620eba5fe6bb905f3666d667ec))
+- **repl**: attach a quoted or extensionless image path with /file ([`1aef7c1`](https://github.com/BardiaN/kronk-cli/commit/1aef7c14c3bcacd02057b42b878c91f82dd5331c))
+
+### Documentation
+
+- correct the source size in the README ([`ab67ec9`](https://github.com/BardiaN/kronk-cli/commit/ab67ec9fa8c39492b4e281e7d914b3dccb49685f))
+
+### Tests
+
+- **smoke**: check /file and read_file against a real vision model ([`264b22b`](https://github.com/BardiaN/kronk-cli/commit/264b22bb2641b6095e1c1aff73097c285024bd17))
+
 ## 0.9.0 — 2026-11-11
 
 ### Features

@@ -23,14 +23,14 @@ export const userPromptsDir = () => join(homedir(), '.config', 'kronk-cli', 'pro
 export const projectPromptsDir = (cwd) => join(cwd, '.kronk', 'prompts');
 
 /** Read `<name>.md` files from a directory; a missing directory is just empty. */
-function readDir(dir) {
+function readDir(dir, invalid) {
   const out = {};
   let entries;
   try { entries = readdirSync(dir); } catch { return out; }
   for (const f of entries) {
     if (!f.endsWith('.md')) continue;
     const name = f.slice(0, -3);
-    if (!NAME.test(name)) continue;
+    if (!NAME.test(name)) { invalid?.push(join(dir, f)); continue; }
     let text;
     try { text = readFileSync(join(dir, f), 'utf8'); } catch { continue; }
     text = text.trim();
@@ -42,18 +42,21 @@ function readDir(dir) {
 /**
  * Merge the three sources, later winning: the config file's `presets`
  * object, the user's prompts directory, then the project's. Returns
- * `{ presets, shadowed }` where `shadowed` lists names that collide with a
- * built-in command and so were left out.
+ * `{ presets, shadowed, invalid }` where `shadowed` lists names that collide
+ * with a built-in command and `invalid` the files or keys skipped because the
+ * name is not [a-z0-9-]+; both are left out.
  */
 export function loadPresets({ fromConfig, userDir, projectDir } = {}) {
   const merged = {};
+  const invalid = [];
   if (fromConfig && typeof fromConfig === 'object' && !Array.isArray(fromConfig)) {
     for (const [name, text] of Object.entries(fromConfig)) {
-      if (NAME.test(name) && typeof text === 'string' && text.trim()) merged[name] = text.trim();
+      if (!NAME.test(name)) invalid.push(`"${name}" in the config file`);
+      else if (typeof text === 'string' && text.trim()) merged[name] = text.trim();
     }
   }
-  if (userDir) Object.assign(merged, readDir(userDir));
-  if (projectDir) Object.assign(merged, readDir(projectDir));
+  if (userDir) Object.assign(merged, readDir(userDir, invalid));
+  if (projectDir) Object.assign(merged, readDir(projectDir, invalid));
 
   const shadowed = [];
   const presets = {};
@@ -61,7 +64,7 @@ export function loadPresets({ fromConfig, userDir, projectDir } = {}) {
     if (BUILTINS.has(name)) shadowed.push(name);
     else presets[name] = merged[name];
   }
-  return { presets, shadowed };
+  return { presets, shadowed, invalid };
 }
 
 /** `$ARGS` replaced by the extra text; with no placeholder the text is appended. */

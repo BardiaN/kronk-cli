@@ -29,6 +29,8 @@ import { createServer } from 'node:http';
 export function startStub({
   ids = [], resident = [], fail = {}, template = null, modelInfoStatus = 200, turns = [],
   samplingMetadata = null, samplingParameters = null,
+  // What the native model list (/kronk/models) reports: [{ id, has_projection }].
+  modelList = [],
   // Holds a streamed reply open for this long before writing anything. Only
   // one suite needs it (test/rescue.test.js, proving a job is observably
   // `running` and not just instantaneously `done`) — everyone else leaves it
@@ -51,6 +53,7 @@ export function startStub({
     if (url === '/v1/kronk/models/ps') {
       return send(res, 200, resident.map((id) => ({ id, status: 'loaded', vram_total: 1e9 })));
     }
+    if (url === '/v1/kronk/models') return send(res, 200, { data: modelList });
     if (url.startsWith('/v1/kronk/models')) {
       if (modelInfoStatus !== 200) {
         return send(res, modelInfoStatus, { error: { message: 'model info unavailable' } });

@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../../src/config.js';
 import { listModels, listModelDetails, warm } from '../../src/client.js';
@@ -142,6 +145,9 @@ export async function setup() {
   const ids = await listModels();
   const details = await listModelDetails();
   const sizeOf = new Map(details.map((d) => [d.id, d.size]));
+  // Kronk's native model list says which models carry a multimodal projector
+  // (the MTMD column of `kronk model list`); that is what "can see" means here.
+  const sees = new Set(details.filter((d) => d.has_projection).map((d) => d.id));
   const served = chatModels(ids);
   if (!served.length) {
     return {
@@ -180,7 +186,7 @@ export async function setup() {
   if (lightModel) await warm(lightModel);
 
   return {
-    skip: false, baseUrl: config.baseUrl, model, lightModel, hasLightModel,
+    skip: false, baseUrl: config.baseUrl, model, lightModel, hasLightModel, vision: sees.has(model),
   };
 }
 
@@ -229,7 +235,9 @@ function spawnCapture(cmd, args, {
  * setting `KRONK_MODEL` again in `env`, which is applied after the clear and
  * so still wins.
  */
-export async function run(args, { env = {}, stdin, timeout = 180_000 } = {}) {
+export async function run(args, {
+  env = {}, stdin, timeout = 180_000, cwd = REPO,
+} = {}) {
   const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
   delete fullEnv.KRONK_MODEL;
   Object.assign(fullEnv, env);
@@ -237,7 +245,7 @@ export async function run(args, { env = {}, stdin, timeout = 180_000 } = {}) {
   const {
     code, stdout, stderr, timedOut,
   } = await spawnCapture('node', [CLI, ...args], {
-    env: fullEnv, cwd: REPO, timeout, stdin,
+    env: fullEnv, cwd, timeout, stdin,
   });
   if (timedOut) throw new Error(`run(${JSON.stringify(args)}) did not exit within ${timeout}ms`);
   return { code, stdout: strip(stdout), stderr: strip(stderr) };
@@ -282,7 +290,7 @@ const REPL_PIPELINE = '( perl -e \'select(undef,undef,undef,$ENV{SMOKE_SETTLE})\
  * whole reason it is not handled rather than a decision that it should not be.
  */
 export async function repl(lines, {
-  args = [], env = {}, settle = 7, after = 2.5, timeout = 240_000,
+  args = [], env = {}, settle = 7, after = 2.5, timeout = 240_000, cwd = REPO,
 } = {}) {
   const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
   delete fullEnv.KRONK_MODEL;
@@ -294,8 +302,60 @@ export async function repl(lines, {
   // `bash -c <script> <$0> <$1...>`: everything after the script is argv.
   const argv = ['-c', REPL_PIPELINE, 'bash', CLI, ...args];
   const { stdout, stderr, timedOut } = await spawnCapture('bash', argv, {
-    env: fullEnv, cwd: REPO, timeout,
+    env: fullEnv, cwd, timeout,
   });
   if (timedOut) throw new Error(`repl(${JSON.stringify(lines)}) did not exit within ${timeout}ms`);
   return strip(stdout + stderr);
+}
+
+// ---- a picture to show the model -------------------------------------------
+
+const crcTable = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const chunk = (type, data) => {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+
+/** A solid-colour PNG, built with node's zlib; no dependency, no fixture file. */
+export function solidPng(r, g, b, size = 64) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // truecolour
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: size }, () => [r, g, b]).flat())]);
+  const raw = Buffer.concat(Array.from({ length: size }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * A temp directory holding red PNGs named like a macOS screenshot: `plain` has
+ * no extension; the other also has a U+202F before "PM", which `typedName`
+ * spells with a plain space the way a person would type it. Also a binary file
+ * that is not an image.
+ */
+export function screenshotDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'kronk-smoke-shot-'));
+  const plain = 'Screenshot test';
+  const odd = 'Shot 7.51.21' + '\u202f' + 'PM';
+  writeFileSync(join(dir, plain), solidPng(255, 0, 0));
+  writeFileSync(join(dir, odd), solidPng(255, 0, 0));
+  writeFileSync(join(dir, 'blob.dat'), Buffer.from([0, 1, 2, 0xff, 0xfe, 0, 7]));
+  return { dir, plain, typedName: odd.replace('\u202f', ' ') };
 }

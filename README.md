@@ -172,7 +172,7 @@ Two separate things keep it there, and they are worth telling apart:
 
 | | Enforced by | Covers |
 |---|---|---|
-| **Path containment** | `kronk-cli` | `read_file`, `edit_file`, `write_file`, `list_dir`, `search` — resolved through symlinks, so a link inside the project cannot point out of it |
+| **Path containment** | `kronk-cli` | `edit_file`, `write_file` — always confined to the project. `read_file`, `list_dir` and `search` are too, unless you allow a read outside it (see below). Every path is resolved through symlinks first, so a link inside the project cannot point out of it |
 | **Shell confinement** | the kernel — `sandbox-exec` on macOS, [`bwrap`](https://github.com/containers/bubblewrap) on Linux | `bash`: writes outside the project are denied, and key material (`~/.ssh`, `~/.gnupg`, `~/.password-store`, the macOS keychain, `~/.netrc`, `~/.npmrc`) is unreadable |
 
 The startup banner says which is in force:
@@ -197,11 +197,45 @@ project, the temp directories and the build caches. The read half is a deny-list
 only as good as its entries — which is exactly why it is kept narrow rather than broad. See
 [Authenticated CLIs](#authenticated-clis) for the trade that produced it.
 
+#### Reading outside the launch folder
+
+Ask about a file that lives elsewhere — "what is in `~/Downloads/compteur.jpeg`?" — and the model
+just calls `read_file` with that path instead of telling you to copy it in. In an interactive
+terminal you are asked:
+
+```
+  read outside /Users/you/Desktop: /Users/you/Downloads/compteur.jpeg
+  allow? [y] yes once · [f] the folder /Users/you/Downloads for this session · [N] no
+```
+
+- **`y`** reads that one path, this once.
+- **`f`** allows the containing folder (the folder itself, for `list_dir` and `search`) and
+  everything under it until you exit. `/context` lists what is open. It survives `/clear`, is never
+  written to disk, and a symlink is resolved to its real location first, so a link from elsewhere
+  into an allowed folder is covered and a link out of one is not.
+- **`n`** (or just Enter) tells the model you declined and not to retry that path; it is not asked
+  about it again this session.
+- **`/file <path>`** needs no question at all: typing the path is the consent, for that file.
+
+This is read-only and only reaches `read_file` (images included), `list_dir`, `search` and the
+sub-agents' use of them — a sub-agent's question comes to the same prompt. `write_file`,
+`edit_file` and `bash` stay confined exactly as above, whatever you answer. Credential stores
+(`~/.ssh`, `~/.gnupg`, the keychain, `~/.netrc`, `~/.npmrc`, anything in `KRONK_SANDBOX_DENY`) are
+refused outright: there is no answer to the prompt that opens them, and a `search` that would walk
+into one is refused too.
+
+Nobody is asked when nobody can answer. A piped run, a one-shot prompt (`kronk-cli "…"`), a rescue
+job and `--deny` get no prompt: the tool tells the model the path is outside the launch folder and
+that you must start kronk-cli in a folder that contains it, or attach the file with `/file`.
+`--yes` and `--auto` are about writes and commands, so they do not answer this question: with a
+terminal you are still asked, and without one the read is refused.
+
 Two more limits worth stating:
 
-- **Symlinks out of the project are refused, even benign ones.** An `npm link`ed package under
-  `node_modules` resolves outside the root, so `read_file` and `write_file` will decline it. Use the
-  real path, which is inside a project the agent was launched in.
+- **Symlinks out of the project are refused, even benign ones, unless you allow where they
+  lead.** An `npm link`ed package under `node_modules` resolves outside the root, so `write_file`
+  will decline it, and `read_file` will ask first. Use the real path, which is inside a project the
+  agent was launched in.
 - **Only filesystem operations are constrained.** The macOS profile allows everything else by
   design, so a command that persuades an *already-running* unsandboxed process to act on its behalf
   is not covered by it. Confinement limits what a command reaches directly; it is not a substitute
@@ -829,7 +863,7 @@ Older servers send none, and the error is reported as before.
 On a terminal, kronk-cli also tells the window what it is doing, so a tab you are not looking at
 can say so:
 
-- **Title** (OSC 0): `kronk-cli · working`, `kronk-cli · needs approval`, `kronk-cli · ready`. The
+- **Title** (OSC 0): `kronk-cli · working`, `kronk-cli · needs approval` (also while the read-outside-the-launch-folder question is open), `kronk-cli · ready`. The
   title you had is pushed on first use and popped on exit.
 - **Progress** (OSC 9;4): an indeterminate indicator while a turn runs, cleared when it stops.
   Shown by Windows Terminal, Ghostty, iTerm2 and ConEmu; ignored elsewhere.
@@ -885,8 +919,7 @@ Two consequences worth knowing:
 
 ## Images
 
-`/file shot.png` reads the image (PNG, JPEG, WebP or GIF, up to 10 MB, inside the launch
-root like `read_file`) and attaches it to your next message as an OpenAI `image_url` content
+`/file shot.png` reads the image (PNG, JPEG, WebP or GIF, up to 10 MB) and attaches it to your next message as an OpenAI `image_url` content
 part. The type is detected from the file's bytes, not its extension.
 
 The argument is forgiving about how a path was typed: one pair of surrounding quotes is
@@ -897,7 +930,7 @@ AM/PM; a typed plain space matches it. Each guess is used only when exactly one 
 `/file` says which it used. A path that is not found is reported with the absolute path tried,
 the launch folder relative paths resolve against, and a same-named file one folder down
 (`Desktop/...`) as a suggestion only. A file that is neither an image nor UTF-8 text is refused
-rather than pasted into the conversation. Every path must stay inside the launch root.
+rather than pasted into the conversation. A path outside the launch folder is fine here: typing it is your consent for that file (the model's own `read_file` asks first — see [Scope](#reading-outside-the-launch-folder)).
 
 `/file` also works anywhere in a line, any number of times:
 `in this /file "Screenshot 2026-11-03 at 19.51.21" what do you see?`. The argument is a quoted
@@ -912,7 +945,7 @@ while a task is running (steering) are sent as plain text; `/file` is not expand
 prints a note if Kronk returns an error.
 
 The model can also open an image itself: `read_file` on a file whose bytes are an image (same
-launch-root check and 10 MB cap) answers "image attached" and the harness follows the round's
+launch-root check, or the outside-the-folder question, and 10 MB cap) answers "image attached" and the harness follows the round's
 tool results with a user message carrying the image, because a chat tool message cannot hold
 one. Sub-agents get the same. Ask "what is in the file 'Screenshot 2026-11-03 at 19.51.21'?"
 and the model can read it without `/file`. `/context` and `/compact` count and summarize an
@@ -928,7 +961,7 @@ instead — see [Steering a running task](#steering-a-running-task).
 | `/help` | list these commands |
 | `/models` | what Kronk is serving, with sizes and what is resident |
 | `/model <id>` | switch model — substring match, `/AGENT` preferred; re-reads that model's window and caps |
-| `/file <path>` | add a file to the conversation as context (also usable inside a sentence); an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension |
+| `/file <path>` | add a file to the conversation as context (also usable inside a sentence); an image (PNG, JPEG, WebP or GIF, recognised by its bytes) is attached to your next message instead (see [Images](#images)). The path may be quoted, start with `~`, or omit a hidden image extension, and may be outside the launch folder: typing it is your consent |
 | `/auto` | toggle autonomous mode (auto-approve + run to completion) |
 | `/steps [n\|off]` | show or set the tool-call cap |
 | `/thinking` | show or hide the model's reasoning |
@@ -937,7 +970,7 @@ instead — see [Steering a running task](#steering-a-running-task).
 | `/tasks [n]` | sub-agent runs this session; with `n`, that one in full |
 | `/mcp` | list attached MCP servers and their tools |
 | `/presets` | saved prompts, each with a one-line preview; run one with `/<name> [extra text]` |
-| `/context` | how much of the context window is used |
+| `/context` | how much of the context window is used, and any folders you allowed the model to read outside the launch folder |
 | `/theme [dark\|light]` | show or pin the palette, for when the terminal was read wrong |
 | `/compact` | replace the conversation with a summary of itself |
 | `/clear` | reset the conversation, keep the model; stops background jobs |
@@ -1351,9 +1384,9 @@ Disable with `--no-compact` or `KRONK_AUTO_COMPACT=false` if you would rather se
 
 | Tool | Approval | |
 |---|---|---|
-| `read_file` | — | Read a UTF-8 file; a PNG, JPEG, WebP or GIF is shown to a vision model as an image (see [Images](#images)) |
-| `list_dir` | — | List a directory |
-| `search` | — | Regex search via ripgrep, falling back to grep |
+| `read_file` | — | Read a UTF-8 file; a PNG, JPEG, WebP or GIF is shown to a vision model as an image (see [Images](#images)). Outside the launch folder, asks you first |
+| `list_dir` | — | List a directory. Outside the launch folder, asks you first |
+| `search` | — | Regex search via ripgrep, falling back to grep. Outside the launch folder, asks you first |
 | `edit_file` | ✋ | Replace an exact string in an existing file (`replace_all` for every match); fails with the match count if it is absent or ambiguous; shows the removed and added lines first |
 | `write_file` | ✋ | Create a file or replace one wholesale; shows a preview first |
 | `bash` | ✋ | Run a command; shows it first. One that outlives its timeout keeps running as a background job |
@@ -1376,8 +1409,8 @@ that writes, runs a command, delegates, or comes from an MCP server runs alone a
 approved when you approved the `bash` call that began it.
 
 `--yes` and `--auto` skip the prompts; `--deny` goes the other way and refuses every call that
-would have prompted, without asking anyone — see [Autonomous mode](#autonomous-mode). Paths resolve against the session directory and cannot
-escape the launch root — including through a symlink. `bash` additionally runs under an OS
+would have prompted, without asking anyone — see [Autonomous mode](#autonomous-mode). Paths resolve against the session directory and writes cannot
+escape the launch root — including through a symlink; a read outside it is a question to you, see [Reading outside the launch folder](#reading-outside-the-launch-folder). `bash` additionally runs under an OS
 sandbox where one is available; see [Scope](#scope) for exactly what that covers. `bash` keeps its working directory **between calls**, so a bare `cd`
 sticks the way it would in a real shell.
 
@@ -1754,6 +1787,8 @@ touch anything, so that is the split.
   exactly as they always did.
 - **Touch the checklist.** `set_plan` belongs to the task you asked for; a sub-agent has no
   access to it.
+- **Read outside the launch folder without you.** Its `read_file`, `list_dir` and `search` raise
+  the same [question](#reading-outside-the-launch-folder) the main agent's do.
 - **Reach MCP servers.** Its tool list is deliberately the short one.
 
 It also runs under a step cap — 40 by default, where the main agent's is unlimited — because

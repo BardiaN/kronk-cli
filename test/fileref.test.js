@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +8,8 @@ import {
   mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage,
 } from '../src/fileref.js';
 import { loadImage } from '../src/image.js';
-import { session } from '../src/tools.js';
+import { resolveFileArg } from '../src/filearg.js';
+import { session, consentFile } from '../src/tools.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const only = (names) => async (arg) => names.includes(arg);
@@ -108,7 +109,15 @@ test('buildFileMessage: any failure blocks the whole message and lists every err
   assert.match(b.errors[1], /blob\.bin is binary/);
 }));
 
-test('buildFileMessage: a launch-root escape is an error, not a read', () => inTemp(async () => {
-  const b = await build('what is /file "../secret.txt" ?');
-  assert.match(b.errors[0], /outside the launch folder/);
+test('buildFileMessage: a path above the launch folder is attached, because the user typed it', () => inTemp(async (dir) => {
+  const up = join(dir, '..', `up-${process.pid}.txt`);
+  writeFileSync(up, 'from above');
+  try {
+    // The REPL resolves through a wrapper that records the consent (src/index.js).
+    const attach = async (arg) => { const r = await resolveFileArg(arg); consentFile(r.path); return r; };
+    const p = await parseFileRefs(`what is /file "${up}" ?`, resolves);
+    const b = await buildFileMessage(p, { resolve: attach, load: loadImage, read: readFile });
+    assert.equal(b.errors, undefined);
+    assert.match(b.contexts[0], /from above/);
+  } finally { rmSync(up, { force: true }); session.readFiles.clear(); }
 }));

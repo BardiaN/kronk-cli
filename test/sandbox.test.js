@@ -52,7 +52,7 @@ test('search resolves its path through the same guard as read_file', async () =>
   const root = tmp();
   await withRoot(root, async () => {
     const out = await runTool('search', { pattern: 'localhost', path: '/etc/hosts' });
-    assert.match(out, /refusing to touch path outside/);
+    assert.match(out, /outside the launch folder/);
   });
 });
 

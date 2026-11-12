@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { IMAGE_EXTENSIONS, sniffMime } from './image.js';
-import { safe, session } from './tools.js';
+import { session } from './tools.js';
 
 /**
  * Turn what the user typed after `/file` into a path that can be opened.
@@ -69,12 +69,9 @@ export async function resolveFileArg(arg, { cwd = session.cwd, root = session.ro
   const typed = expandHome(unquote(arg), home);
   if (!typed) throw new Error('usage: /file <path>');
   const abs = resolve(cwd, typed);
-  const outside = (p) => new Error(`${p} is outside the launch folder (${root}); /file only reads inside it`);
-  try { safe(abs); } catch { throw outside(abs); }
 
   const hits = await findIn(dirname(abs), basename(abs));
   if (hits.length === 1) {
-    try { safe(hits[0]); } catch { throw outside(hits[0]); }
     return { path: hits[0], note: hits[0] === abs ? null : `using ${hits[0]}` };
   }
   if (hits.length > 1) {

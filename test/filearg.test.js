@@ -103,12 +103,13 @@ test('resolveFileArg: the suggestion is never attached on its own', async () => 
   await assert.rejects(resolveFileArg('x.png'), /not found/);
 });
 
-test('resolveFileArg: ~ expands, and a path outside the launch folder is refused', async () => {
+test('resolveFileArg: ~ expands, and a path outside the launch folder is the user\'s to attach', async () => {
   const dir = tree();
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'kronk-home-')));
   writeFileSync(join(home, 'out.png'), PNG);
-  await assert.rejects(resolveFileArg('~/out.png', { home }), /outside the launch folder/);
-  await assert.rejects(resolveFileArg('../nope.png'), /outside the launch folder/);
+  // Typing the path is the consent; the launch folder only limits the model.
+  assert.equal((await resolveFileArg('~/out.png', { home })).path, join(home, 'out.png'));
+  await assert.rejects(resolveFileArg('../nope.png'), /not found/);
   const inside = join(dir, 'in.png');
   writeFileSync(inside, PNG);
   const r = await resolveFileArg('~/in.png', { home: dir });

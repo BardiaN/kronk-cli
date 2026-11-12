@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, rmSync, existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -351,3 +353,28 @@ test('a sub-agent\'s read goes to the same question, through the caller\'s shiel
   });
   assert.equal(seen[0].readAccess, undefined, 'no question to forward when there is nobody to ask');
 });
+
+// ── review fixes ──────────────────────────────────────────────────────────────
+
+test('a credential store is matched without regard to case where the filesystem does the same', () => {
+  assert.equal(secretHit('/home/u/.SSH/id_rsa', 'read_file', ['/home/u/.ssh']), null, 'exact match by default');
+  assert.equal(secretHit('/home/u/.SSH/id_rsa', 'read_file', ['/home/u/.ssh'], true), '/home/u/.ssh');
+  assert.equal(decideRead({ ...base, abs: '/home/u/.NPMRC', ci: true, interactive: true }).reason, 'secret');
+});
+
+test('~/.SSH/id_rsa, .NPMRC and .NETRC are refused on a case-insensitive disk, whatever was granted', () => world(async ({ parent }) => {
+  const home = process.env.HOME;
+  process.env.HOME = parent;
+  try {
+    mkdirSync(join(parent, '.ssh'));
+    writeFileSync(join(parent, '.ssh', 'id_rsa'), 'PRIVATE KEY');
+    writeFileSync(join(parent, '.npmrc'), 'TOKEN');
+    if (!existsSync(join(parent, '.SSH'))) return;   // a case-sensitive disk: .SSH is simply another name
+    grantReadFolder(parent);
+    for (const p of ['.SSH/id_rsa', '.NPMRC', '.Ssh']) {
+      const r = await runTool(p === '.Ssh' ? 'list_dir' : 'read_file', { path: join(parent, p) });
+      assert.match(r, /credential store/, p);
+    }
+    assert.equal(readCheck(join(parent, '.SSH', 'id_rsa'), { interactive: true }).reason, 'secret');
+  } finally { process.env.HOME = home; }
+}));

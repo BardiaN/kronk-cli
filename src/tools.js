@@ -166,7 +166,7 @@ export function declineGrants(paths) {
  * containment check then fails and `cd` silently stops persisting.
  */
 function real(p) {
-  try { return realpathSync(p); } catch { return p; }
+  try { return realpathSync.native(p); } catch { return p; }
 }
 
 /**
@@ -184,7 +184,7 @@ function realDeep(abs) {
   const tail = [];
   let cur = abs;
   for (;;) {
-    try { return tail.length ? resolve(realpathSync(cur), ...tail) : realpathSync(cur); }
+    try { return tail.length ? resolve(realpathSync.native(cur), ...tail) : realpathSync.native(cur); }
     catch { /* does not exist yet — walk up */ }
     const parent = dirname(cur);
     if (parent === cur) return abs;
@@ -232,6 +232,7 @@ export function readCheck(p, { kind = 'read_file', allow, interactive = false } 
   const secrets = secretPaths(homedir()).map(realDeep);
   const verdict = decideRead({
     abs, kind, root: real(session.root), secrets, interactive,
+    ci: process.platform === 'darwin' || process.platform === 'win32',
     folders: [...session.readFolders], files: [...session.readFiles],
     once: allow ? [...allow] : [], declined: [...session.readDeclined],
   });

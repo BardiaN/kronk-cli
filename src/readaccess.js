@@ -15,23 +15,24 @@ import { dirname, isAbsolute, relative, sep } from 'node:path';
  */
 
 /** Whether `child` is `parent` or lives under it. Both must be absolute and resolved. */
-export function within(child, parent) {
-  const rel = relative(parent, child);
+export function within(child, parent, ci = false) {
+  const rel = ci ? relative(parent.toLowerCase(), child.toLowerCase()) : relative(parent, child);
   if (rel === '') return true;
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /**
- * The credential store `abs` touches, or null.
+ * The credential store `abs` touches, or null. `ci` compares without case, for
+ * the filesystems (APFS, NTFS by default) where `.SSH` is `.ssh`.
  *
  * `search` walks a whole tree, so it also touches a store that sits *under* the
  * directory it was pointed at; a read or a listing only touches the path itself
  * (naming the entries of a directory reveals no key material).
  */
-export function secretHit(abs, kind, secrets) {
+export function secretHit(abs, kind, secrets, ci = false) {
   for (const s of secrets) {
-    if (within(abs, s)) return s;
-    if (kind === 'search' && within(s, abs)) return s;
+    if (within(abs, s, ci)) return s;
+    if (kind === 'search' && within(s, abs, ci)) return s;
   }
   return null;
 }
@@ -63,10 +64,10 @@ export function grantFolder(abs, kind, isDir) {
  */
 export function decideRead({
   abs, kind = 'read_file', root, folders = [], files = [], once = [],
-  declined = [], secrets = [], interactive = false,
+  declined = [], secrets = [], interactive = false, ci = false,
 }) {
   if (within(abs, root)) return { action: 'allow', reason: 'inside' };
-  if (secretHit(abs, kind, secrets)) return { action: 'refuse', reason: 'secret' };
+  if (secretHit(abs, kind, secrets, ci)) return { action: 'refuse', reason: 'secret' };
   if (files.includes(abs) || once.includes(abs) || folders.some((f) => within(abs, f))) {
     return { action: 'allow', reason: 'granted' };
   }

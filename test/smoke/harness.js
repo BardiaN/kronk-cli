@@ -251,43 +251,25 @@ export async function run(args, {
   return { code, stdout: strip(stdout), stderr: strip(stderr) };
 }
 
-/**
- * The pacing pipeline `repl()` runs under `bash -c`. It is a constant: the
- * CLI path and its arguments arrive as positional parameters (`"$@"`) and the
- * timings through the environment, so nothing a caller or `SMOKE_MODEL`
- * supplies is ever parsed as shell text.
- */
-const REPL_PIPELINE = '( perl -e \'select(undef,undef,undef,$ENV{SMOKE_SETTLE})\'; '
-  + 'printf \'%s\' "$SMOKE_REPL_PAYLOAD"; '
-  + 'perl -e \'select(undef,undef,undef,$ENV{SMOKE_AFTER})\' ) '
-  + '| script -q /dev/null node "$@"';
+/** Runs argv[1:] on a pty and exits with its status; stdin and stdout are relayed. */
+const PTY_SPAWN = 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))';
 
 /**
  * Drive the interactive REPL through a real pty, pacing the input.
  *
  * A piped run never takes the TTY path at all — src/index.js checks
  * `stdin.isTTY` and falls straight into one-shot mode — so exercising the
- * REPL means putting a real pty in front of it, which is what `script`
- * does. And with no prompt already on argv, stdin to that pty *is* the
- * prompt: feeding it eagerly turns the whole run into a one-shot, and
- * `/exit` piped in that way exits before the banner is ever printed. The
- * fix is the same one the reference script used: wait for the banner and
- * the model load to settle before typing anything, then wait again after
- * the last line so `script` does not see EOF and tear the pty down before
- * the REPL has processed what was just sent.
+ * REPL means putting a real pty in front of it. With no prompt already on argv,
+ * stdin to that pty *is* the prompt: feeding it eagerly turns the whole run into
+ * a one-shot, and `/exit` piped in that way exits before the banner is ever
+ * printed. So nothing is typed until the banner and the model load have had
+ * `settle` seconds, and the pty is kept open for `after` seconds past the last
+ * line (then closed with Ctrl-D) so it is not torn down before the REPL has
+ * processed what was just sent.
  *
- * The lines are carried through an environment variable and read back with
- * `printf '%s'` rather than spliced into the shell command as text, so a
- * check is free to feed a prompt containing quotes or `$` without it being
- * interpreted as shell syntax.
- *
- * macOS-only, deliberately: `script -q /dev/null <cmd> [args...]` is the BSD
- * `script`'s calling convention (quiet, throwaway typescript file, then the
- * command to run). GNU `script`, the one Linux ships, wants `-c "<cmd
- * string>"` instead of a trailing argv, so this exact invocation does not
- * port there unchanged. Nothing here detects the difference or branches on
- * it — every machine this suite has run on so far is a Mac, and that is the
- * whole reason it is not handled rather than a decision that it should not be.
+ * No shell is involved anywhere: the pty comes from python's `pty` module,
+ * started with an argv array, so a prompt containing quotes or `$` is only ever
+ * bytes written to a terminal. Needs python3.
  */
 export async function repl(lines, {
   args = [], env = {}, settle = 7, after = 2.5, timeout = 240_000, cwd = REPO,
@@ -295,17 +277,25 @@ export async function repl(lines, {
   const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
   delete fullEnv.KRONK_MODEL;
   Object.assign(fullEnv, env);
-  fullEnv.SMOKE_REPL_PAYLOAD = lines.map((l) => `${l}\n`).join('');
-  fullEnv.SMOKE_SETTLE = String(settle);
-  fullEnv.SMOKE_AFTER = String(after);
-
-  // `bash -c <script> <$0> <$1...>`: everything after the script is argv.
-  const argv = ['-c', REPL_PIPELINE, 'bash', CLI, ...args];
-  const { stdout, stderr, timedOut } = await spawnCapture('bash', argv, {
-    env: fullEnv, cwd, timeout,
+  const child = spawn('python3', ['-I', '-c', PTY_SPAWN, process.execPath, CLI, ...args], {
+    cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
+  let raw = '';
+  let closed = false;
+  child.stdout.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stdin.on('error', () => {});
+  const done = new Promise((resolve) => child.on('close', () => { closed = true; resolve(); }));
+  const timers = [];
+  const later = (fn, seconds) => timers.push(setTimeout(fn, seconds * 1000));
+  later(() => child.stdin.write(lines.map((l) => `${l}\n`).join('')), settle);
+  later(() => { if (!closed) child.stdin.write('\x04'); }, settle + after);
+  let timedOut = false;
+  later(() => { timedOut = true; child.kill('SIGKILL'); }, timeout / 1000);
+  await done;
+  timers.forEach(clearTimeout);
   if (timedOut) throw new Error(`repl(${JSON.stringify(lines)}) did not exit within ${timeout}ms`);
-  return strip(stdout + stderr);
+  return strip(raw);
 }
 
 /**
@@ -320,7 +310,7 @@ export async function repl(lines, {
  * everything the terminal showed, ANSI stripped. A step that never matches
  * rejects with the output so far, because a rerun costs minutes.
  *
- * macOS `script`, like `repl()` above, and for the same reason.
+ * Needs python3 for the pty; no shell is involved.
  */
 export async function replDriven(steps, {
   args = [], env = {}, cwd = REPO, until = null, timeout = 240_000,
@@ -328,10 +318,10 @@ export async function replDriven(steps, {
   const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
   delete fullEnv.KRONK_MODEL;
   Object.assign(fullEnv, env);
-  // `script` wants a real pipe or file on stdin; the socket node hands a child
-  // makes it fail on tcgetattr. `cat` turns it into a pipe, and relays each line
-  // the moment it is written.
-  const child = spawn('bash', ['-c', 'cat | script -q /dev/null node "$@"', 'bash', CLI, ...args], {
+  // No shell: an argv array straight to python's pty module, which gives the
+  // REPL a real terminal and copes with the socket node hands a child as its
+  // stdin (`script` does not: it fails on tcgetattr).
+  const child = spawn('python3', ['-I', '-c', PTY_SPAWN, process.execPath, CLI, ...args], {
     cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
   let raw = '';

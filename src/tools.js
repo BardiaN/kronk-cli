@@ -1,8 +1,10 @@
-import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, open } from 'node:fs/promises';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:path';
-import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import {
+  realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync, statSync, constants,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs, secretPaths } from './sandbox.js';
 import { decideRead, grantFolder, isWide, refusalText, secretsUnder } from './readaccess.js';
@@ -215,6 +217,25 @@ export function safe(p) {
     throw new Error(`refusing to touch path outside ${session.root}: ${p}`);
   }
   return abs;
+}
+
+/**
+ * Read a text file through one handle that was checked.
+ *
+ * A FIFO or a device would block a read forever, and outside the launch folder
+ * nothing else has vouched for the path. Checking with `stat` and reading with
+ * `readFile` leaves a gap in which the path can become one, so the file is
+ * opened once (O_NONBLOCK, so opening a FIFO cannot itself block), the handle
+ * is checked, and the read goes through the same handle. A directory falls
+ * through to the read, which reports it as it always did.
+ */
+async function readRegular(file, label) {
+  const fh = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() && !st.isDirectory()) return `error: ${label} is not a regular file`;
+    return await fh.readFile('utf8');
+  } finally { await fh.close(); }
 }
 
 /** `~` and `~/x` to the home directory; anything else untouched. */
@@ -973,11 +994,7 @@ export async function runTool(name, args, opts = {}) {
           return `image attached: ${args.path} (${img.mime}, ${img.bytes.toLocaleString()} bytes). It follows this result as a user message.`;
         }
         const file = safeRead(args.path, { kind: 'read_file', allow: opts.allowRead });
-        // A FIFO or a device would block a read forever, and outside the launch
-        // folder nothing else has vouched for the path.
-        const st = await stat(file);
-        if (!st.isFile() && !st.isDirectory()) return `error: ${args.path} is not a regular file`;
-        return clip(await readFile(file, 'utf8'));
+        return clip(await readRegular(file, args.path));
       }
 
       case 'write_file':

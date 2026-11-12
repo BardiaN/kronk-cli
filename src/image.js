@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { basename, extname } from 'node:path';
 import { safeRead } from './tools.js';
 
@@ -41,7 +42,8 @@ export async function loadImage(path, { optional = false, allow } = {}) {
   const abs = safeRead(path, { kind: 'read_file', allow });
   // One handle for the size check and the read: a stat followed by a separate
   // readFile lets the file change between the two.
-  const fh = await open(abs, 'r');
+  // O_NONBLOCK so that opening a FIFO cannot hang; the fstat below refuses it.
+  const fh = await open(abs, constants.O_RDONLY | constants.O_NONBLOCK);
   let buf;
   try {
     const st = await fh.stat();

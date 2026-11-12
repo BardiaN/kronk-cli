@@ -16,6 +16,7 @@ import { runTurn, SYSTEM } from '../src/agent.js';
 import { runTask } from '../src/subagent.js';
 import { config } from '../src/config.js';
 import { contextLines } from '../src/ui.js';
+import { execFileSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { deferredPrompt } from '../src/prompt.js';
 import { startStub } from './fixtures/kronk-stub.js';
@@ -482,3 +483,14 @@ test('without fresh, typing ahead still answers, as it always did', async () => 
   assert.equal(await rl.question('› '), 'b');
   rl.close();
 });
+
+test('a FIFO is refused at once, by read_file and as an image, not waited on', { skip: process.platform === 'win32' }, () => world(async ({ root }) => {
+  const fifo = join(root, 'pipe');
+  execFileSync('mkfifo', [fifo]);
+  const t0 = Date.now();
+  assert.match(await runTool('read_file', { path: 'pipe' }), /^error: pipe is not a regular file/);
+  assert.match(await runTool('read_file', { path: 'pipe' }, { images: [] }), /not a regular file/);
+  assert.ok(Date.now() - t0 < 2000, 'returned without waiting for a writer');
+  const dirRead = await runTool('read_file', { path: '.' });
+  assert.match(dirRead, /^error: .*EISDIR/, 'a directory is still reported as before');
+}));

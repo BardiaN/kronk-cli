@@ -308,6 +308,71 @@ export async function repl(lines, {
   return strip(stdout + stderr);
 }
 
+/**
+ * Drive the REPL through a pty the way a person would: type a line only once
+ * the screen shows what it answers.
+ *
+ * `repl()` pre-loads its input and paces it by the clock, which cannot answer a
+ * question that appears only after the model has chosen to ask it. Here each
+ * step is `{ when, send }`: wait until `when` (a RegExp) matches output that
+ * arrived after the previous step's match, then type `send`. After the last
+ * step it waits for `until` if one is given, types `/exit`, and returns
+ * everything the terminal showed, ANSI stripped. A step that never matches
+ * rejects with the output so far, because a rerun costs minutes.
+ *
+ * macOS `script`, like `repl()` above, and for the same reason.
+ */
+export async function replDriven(steps, {
+  args = [], env = {}, cwd = REPO, until = null, timeout = 240_000,
+} = {}) {
+  const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
+  delete fullEnv.KRONK_MODEL;
+  Object.assign(fullEnv, env);
+  // `script` wants a real pipe or file on stdin; the socket node hands a child
+  // makes it fail on tcgetattr. `cat` turns it into a pipe, and relays each line
+  // the moment it is written.
+  const child = spawn('bash', ['-c', 'cat | script -q /dev/null node "$@"', 'bash', CLI, ...args], {
+    cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let raw = '';
+  let closed = false;
+  child.stdout.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.on('close', () => { closed = true; });
+  child.stdin.on('error', () => {});
+  const shown = () => strip(raw);
+  const deadline = Date.now() + timeout;
+
+  const waitFor = async (re, from, what) => {
+    for (;;) {
+      const m = shown().slice(from).match(re);
+      if (m) return from + m.index + m[0].length;
+      if (closed || Date.now() > deadline) {
+        child.kill('SIGKILL');
+        throw new Error(`replDriven: ${closed ? 'the REPL exited' : 'timed out'} waiting for ${what}; output so far:\n${shown()}`);
+      }
+      await sleep(100);
+    }
+  };
+
+  let at = 0;
+  try {
+    for (const { when, send } of steps) {
+      at = await waitFor(when, at, String(when));
+      child.stdin.write(`${send}\n`);
+    }
+    if (until) at = await waitFor(until, at, String(until));
+    // The prompt before /exit, so the line is read by the REPL and not by a turn.
+    await waitFor(/›/, at, 'the prompt');
+    child.stdin.write('/exit\n');
+    const grace = Date.now() + 20_000;
+    while (!closed && Date.now() < grace) await sleep(100);
+  } finally {
+    if (!closed) child.kill('SIGKILL');
+  }
+  return shown();
+}
+
 // ---- a picture to show the model -------------------------------------------
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {

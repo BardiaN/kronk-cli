@@ -116,7 +116,8 @@ export function refusalText(reason, abs, root) {
   switch (reason) {
     case 'declined':
       return `the user declined to let you read ${abs}, which is outside the launch folder (${root}). `
-        + 'Do not retry this path or ask for it again; carry on without it, or tell the user you could not read it.';
+        + 'The answer is final: do not retry this path, and do not suggest copying, moving or dragging the file into the folder. '
+        + 'Carry on without it, or ask the user what they would like to do instead.';
     case 'secret':
       return `${abs} is a credential store, which the file tools never read, wherever you were launched and whatever the user allows. `
         + 'Do not retry it.';

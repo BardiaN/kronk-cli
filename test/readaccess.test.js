@@ -108,7 +108,9 @@ test('each refusal tells the model what to do next', () => {
   assert.match(none, /Do not retry/);
   const no = refusalText('declined', '/o/x.png', '/r');
   assert.match(no, /user declined/);
-  assert.match(no, /Do not retry this path/);
+  assert.match(no, /do not retry this path/);
+  assert.match(no, /do not suggest copying, moving or dragging/);
+  assert.match(no, /ask the user what they would like to do instead/);
   assert.match(refusalText('secret', '/h/.ssh/k', '/r'), /credential store/);
 });
 
@@ -306,7 +308,8 @@ test('no: the model is told the user declined, and the same path is not asked ab
   assert.equal(asked.length, 1);
   for (const r of out) {
     assert.match(r, /^error: the user declined to let you read /);
-    assert.match(r, /Do not retry this path/);
+    assert.match(r, /do not retry this path/);
+    assert.match(r, /do not suggest copying/);
   }
 }));
 

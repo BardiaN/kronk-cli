@@ -46,9 +46,18 @@ export function secretsUnder(abs, secrets, ci = false) {
  * containing a file, or the directory itself for a listing or a search. Null
  * when that would be the whole filesystem, which is never offered.
  */
-export function grantFolder(abs, kind, isDir) {
+export function grantFolder(abs, kind, isDir, home = null) {
   const dir = kind === 'read_file' || !isDir ? dirname(abs) : abs;
-  return dir === dirname(dir) ? null : dir;
+  return dir === dirname(dir) || isWide(dir, home) ? null : dir;
+}
+
+/**
+ * Whether granting `dir` would hand over the home folder or a parent of it: one
+ * keystroke that opens every project, document and dotfile the user has. Such a
+ * folder is only ever offered as "yes once".
+ */
+export function isWide(dir, home) {
+  return Boolean(home) && within(home, dir);
 }
 
 /**
@@ -85,10 +94,9 @@ export function decideRead({
 export const readPromptHead = (root, abs) => `read outside ${root}: ${abs}`;
 
 /** What the question offers, given whether a folder can be granted. */
-export function readPromptChoices(folder) {
-  return folder
-    ? `allow? [y] yes once · [f] the folder ${folder} for this session · [N] no `
-    : 'allow? [y] yes once · [N] no ';
+export function readPromptChoices(folder, wide = false) {
+  if (folder) return `allow? [y] yes once · [f] the folder ${folder} for this session · [N] no `;
+  return `${wide ? '(a whole-home grant is not offered; only this path) ' : ''}allow? [y] yes once · [N] no `;
 }
 
 /** `yes`, `folder` or `no`; anything unrecognised is a no, and `f` is a no when no folder was offered. */

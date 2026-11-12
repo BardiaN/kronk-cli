@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  decideRead, within, secretHit, secretsUnder, grantFolder, parseReadAnswer, readPromptHead, readPromptChoices, refusalText,
+  decideRead, within, secretHit, secretsUnder, isWide, grantFolder, parseReadAnswer, readPromptHead, readPromptChoices, refusalText,
 } from '../src/readaccess.js';
 import {
   runTool, session, readCheck, grantReadFolder, consentFile, readGrantLines, TOOLS,
@@ -403,4 +403,31 @@ test('launched in the home folder, the credential stores are not "inside": refus
     assert.match(found, /notes\.txt/);
     assert.doesNotMatch(found, /PRIVATE|id_rsa/, found);
   } finally { process.env.HOME = home; Object.assign(session, saved); }
+}));
+
+test('the home folder, and anything above it, is never offered as a folder grant', () => {
+  assert.equal(grantFolder('/home/u/x.png', 'read_file', false, '/home/u'), null, 'home itself');
+  assert.equal(grantFolder('/home/x.png', 'read_file', false, '/home/u'), null, 'a parent of home');
+  assert.equal(grantFolder('/home/u/Downloads/x.png', 'read_file', false, '/home/u'), '/home/u/Downloads');
+  assert.equal(grantFolder('/home/u', 'list_dir', true, '/home/u'), null);
+  assert.equal(grantFolder('/home/other', 'list_dir', true, '/home/u'), '/home/other');
+  assert.equal(isWide('/home', '/home/u'), true);
+  assert.equal(isWide('/home/u/Documents', '/home/u'), false);
+  assert.match(readPromptChoices(null, true), /whole-home grant is not offered/);
+  assert.doesNotMatch(readPromptChoices(null, true), /\[f\]/);
+});
+
+test('readCheck offers no folder for the home folder, and says it is wide', () => world(async ({ parent }) => {
+  const home = process.env.HOME;
+  process.env.HOME = parent;
+  try {
+    writeFileSync(join(parent, 'a.png'), 'x');
+    const v = readCheck(join(parent, 'a.png'), { interactive: true });
+    assert.equal(v.action, 'ask');
+    assert.equal(v.folder, null);
+    assert.equal(v.wide, true);
+    const w = readCheck(join(parent, 'Downloads', 'meter.txt'), { interactive: true });
+    assert.equal(w.folder, join(parent, 'Downloads'));
+    assert.equal(w.wide, false);
+  } finally { process.env.HOME = home; }
 }));

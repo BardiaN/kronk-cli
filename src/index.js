@@ -686,11 +686,11 @@ async function main() {
   // someone who can answer it. A pipe, or --deny, gets no prompt and the tool
   // refuses on its own. --yes/--auto are about writes and commands, so they do
   // not answer this one: with a terminal, it is still asked.
-  const readAccess = APPROVAL === 'deny' || !(stdin.isTTY && stdout.isTTY) ? null : async ({ path, folder, root }) => {
+  const readAccess = APPROVAL === 'deny' || !(stdin.isTTY && stdout.isTTY) ? null : async ({ path, folder, wide, root }) => {
     console.log(c.yellow(`  ${readPromptHead(root, path)}`));
     term.approval();
     let a;
-    try { a = await rl.question(c.yellow(`  ${readPromptChoices(folder)}`)); }
+    try { a = await rl.question(c.yellow(`  ${readPromptChoices(folder, wide)}`)); }
     finally { term.working(); }
     return parseReadAnswer(a, Boolean(folder));
   };

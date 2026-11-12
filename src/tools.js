@@ -5,7 +5,7 @@ import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:pat
 import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { detectBackend, sandboxArgv, cacheDirs, secretPaths } from './sandbox.js';
-import { decideRead, grantFolder, refusalText, secretsUnder } from './readaccess.js';
+import { decideRead, grantFolder, isWide, refusalText, secretsUnder } from './readaccess.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
@@ -227,6 +227,8 @@ const untilde = (p) => (p === '~' ? homedir() : String(p).startsWith('~/') ? joi
  *
  * Reads only. `safe()` above stays the gate for every write.
  */
+const isDirWide = (abs, kind, isDir) => isWide(kind === 'read_file' || !isDir ? dirname(abs) : abs, real(homedir()));
+
 const CASE_BLIND = process.platform === 'darwin' || process.platform === 'win32';
 
 export function readCheck(p, { kind = 'read_file', allow, interactive = false } = {}) {
@@ -244,7 +246,8 @@ export function readCheck(p, { kind = 'read_file', allow, interactive = false } 
     abs, ...verdict,
     // For a search to leave out: stores that sit below the directory it walks.
     skip: kind === 'search' ? secretsUnder(abs, secrets, CASE_BLIND) : [],
-    folder: verdict.action === 'ask' ? grantFolder(abs, kind, isDir) : null,
+    folder: verdict.action === 'ask' ? grantFolder(abs, kind, isDir, real(homedir())) : null,
+    wide: verdict.action === 'ask' && isDirWide(abs, kind, isDir),
   };
 }
 

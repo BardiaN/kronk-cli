@@ -104,7 +104,7 @@ async function askForRead(name, args, { readAccess, out }) {
     v = readCheck(p, { kind: name, interactive: true });
   } catch { return undefined; }     // runTool reports a path it cannot resolve
   if (v.action !== 'ask') return undefined;
-  const answer = await readAccess({ path: v.abs, folder: v.folder, root: session.root, kind: name });
+  const answer = await readAccess({ path: v.abs, folder: v.folder, wide: v.wide, root: session.root, kind: name });
   if (answer === 'folder' && v.folder) {
     grantReadFolder(v.folder);
     out(c.grey(`  reading ${v.folder}/ is allowed for this session`));

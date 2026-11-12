@@ -74,7 +74,7 @@ export const IMAGE_TOKENS_ESTIMATE = 768;
  * the number the status line shows, so the two can be compared. Pure: the
  * caller tokenizes.
  */
-export function contextLines({ messageTokens, toolTokens, images = 0, measured = 0, window, native, messages }) {
+export function contextLines({ messageTokens, toolTokens, images = 0, measured = 0, window, native, messages, reads = [], root }) {
   const imageTokens = images * IMAGE_TOKENS_ESTIMATE;
   const est = messageTokens + toolTokens + imageTokens;
   const parts = [`messages and system prompt ${k(messageTokens)}`, `tool schemas ${k(toolTokens)}`];
@@ -86,6 +86,12 @@ export function contextLines({ messageTokens, toolTokens, images = 0, measured =
   lines.push(c.grey(`  window: ${window?.toLocaleString() ?? '?'} tokens`
     + (native ? ` · model supports up to ${native.toLocaleString()}` : '')));
   lines.push(c.grey(`  messages: ${messages}`));
+  // Not context at all, but the place the user looks to learn what the model
+  // may read beyond the launch folder, so it is listed here rather than hidden.
+  if (reads.length) {
+    lines.push(c.grey(`  readable outside ${root ?? 'the launch folder'} this session (until you exit):`));
+    for (const r of reads) lines.push(c.grey(`    ${r}`));
+  }
   return lines;
 }
 

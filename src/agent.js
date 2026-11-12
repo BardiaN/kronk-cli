@@ -3,6 +3,7 @@ import { DENIED_BY_SETTINGS, deniedBySettingsMessage } from './approval.js';
 import {
   TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval,
   grantsNeeded, rememberGrants, declineGrants, credentialMatches,
+  readCheck, readTarget, grantReadFolder, declineRead, session,
 } from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
 import { forRequest } from './reasoning.js';
@@ -26,7 +27,8 @@ Rules:
 - To change an existing file use edit_file (an exact string replacement), not write_file, which rewrites the whole file and is for new files.
 - Prefer one decisive action over narrating options.
 - Keep prose short. Code blocks should be complete and runnable.
-- The working directory is the user's project root. Paths are relative to it. You are already inside it. Do not \`cd\` above it. If a command reports that this is not a git repository, you have left the project — return to it rather than searching elsewhere.`;
+- The working directory is the user's project root. Paths are relative to it. You are already inside it. Do not \`cd\` above it. If a command reports that this is not a git repository, you have left the project — return to it rather than searching elsewhere.
+- When the user names a file or folder outside the launch folder, just call read_file, list_dir or search with that path: the user is asked for permission, so never tell them to copy, move or drag the file in. If the result says the read was declined or is not available, accept that and say so.`;
 
 export const SYSTEM_AUTO = `${SYSTEM}
 
@@ -81,6 +83,38 @@ function endTurn(messages, { out = console.log, plan = true } = {}) {
   return messages;
 }
 
+/**
+ * Put the question for a read outside the launch folder, if there is one to put.
+ *
+ * Returns the paths allowed for this one call (a "yes once"), or undefined. A
+ * folder grant and a refusal are recorded in the session instead, so the tool
+ * layer sees them without being told. This runs before the call starts and one
+ * call at a time, even for calls that then run together: two questions open on
+ * one terminal would answer each other.
+ *
+ * `readAccess` is absent when nobody can be asked (a pipe, `--deny`, a rescue
+ * job); the tool then refuses by itself, saying so.
+ */
+async function askForRead(name, args, { readAccess, out }) {
+  if (!readAccess || !READ_ONLY.has(name)) return undefined;
+  let v;
+  try {
+    const p = readTarget(name, args);
+    if (p === null) return undefined;
+    v = readCheck(p, { kind: name, interactive: true });
+  } catch { return undefined; }     // runTool reports a path it cannot resolve
+  if (v.action !== 'ask') return undefined;
+  const answer = await readAccess({ path: v.abs, folder: v.folder, wide: v.wide, root: session.root, kind: name });
+  if (answer === 'folder' && v.folder) {
+    grantReadFolder(v.folder);
+    out(c.grey(`  reading ${v.folder}/ is allowed for this session`));
+    return undefined;
+  }
+  if (answer === 'yes' || answer === 'folder') return new Set([v.abs]);
+  if (answer !== 'refuse') declineRead(v.abs);
+  return undefined;
+}
+
 /** Stands in for `liveLine()` under a pane, which is drawing the same seconds itself. */
 const QUIET_LIVE = { update() {}, done() {} };
 
@@ -89,6 +123,9 @@ const QUIET_LIVE = { update() {}, done() {} };
  *
  * `grant(binary, paths)` resolves to 'yes' | 'no' | 'always'; asked before a
  * command that needs a credential store the sandbox denies.
+ * `readAccess({ path, folder, root, kind })` resolves to 'yes' | 'folder' | 'no';
+ * asked before a read-only tool reaches outside the launch folder. Left out,
+ * such a read is refused.
  * `approve(name, args)` returns a boolean; used for mutating tools. `auto` is
  * autonomous mode — the system prompt in force, not `--yes` — and decides
  * both whether a premature "done" is handed back or accepted, and (via
@@ -97,7 +134,7 @@ const QUIET_LIVE = { update() {}, done() {} };
  */
 export async function runTurn({
   messages, model, signal, approve, grant, mcp, auto = false, maxSteps = config.maxSteps,
-  tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
+  readAccess = null, tools: toolset = TOOLS, plan: usePlan = true, out = console.log, stream = true, depth = 0,
   // Print nothing that redraws the current line — the spinner and the live
   // command line. Set by src/subagent.js when a pane is drawing the run, and
   // the pane owns the bottom of the screen for as long as it is up.
@@ -325,6 +362,9 @@ export async function runTurn({
         for (const b of batch) {
           out(`${c.grey(`  ${at}`)} ${c.blue(`⚙ ${describe(b.name, parsed.get(b))}`)}`);
         }
+        // Questions first, one at a time, before anything runs side by side.
+        const allowed = new Map();
+        for (const b of batch) allowed.set(b, await askForRead(b.name, parsed.get(b), { readAccess, out }));
         // Hooks run per call, as on the serial path: a pre-hook that blocks
         // read_file must not be bypassed just because the call was batched.
         // Warnings are collected and printed in call order with the results.
@@ -334,7 +374,7 @@ export async function runTurn({
           if (pre.blocked) return { pre, result: `error: blocked by a pre-tool hook: ${pre.message}` };
           const images = [];
           const vision = await visionFor(b.name, bArgs);
-          const result = await runTool(b.name, bArgs, { images, vision });
+          const result = await runTool(b.name, bArgs, { images, vision, allowRead: allowed.get(b) });
           if (result.startsWith(IMAGE_NOT_SHOWN)) warnNoVisionOnce(model, (l) => out(c.yellow(l)));
           return { pre, result, images, post: await runPost(config.hooks, b.name, bArgs, result) };
         });
@@ -402,6 +442,8 @@ export async function runTurn({
         }
       }
 
+      const allowRead = isMcp || isTask ? undefined : await askForRead(call.name, args, { readAccess, out });
+
       // Ask here, not in the tool layer, and not after this point.
       //
       // `liveLine()` below starts a 120 ms interval that rewrites the current
@@ -451,7 +493,7 @@ export async function runTurn({
         // 120 ms, which would erase the sub-agent's own output as fast as it
         // is printed.
         try {
-          result = await runTask(args, { run: runTurn, model, signal, approve, grant, out });
+          result = await runTask(args, { run: runTurn, model, signal, approve, grant, readAccess, out });
         } catch (e) {
           // Errors are data here exactly as they are in `runTool`: a
           // sub-agent that died does not take the turn that delegated to it
@@ -465,6 +507,7 @@ export async function runTurn({
             ? await mcp.call(call.name, args)
             : await runTool(call.name, args, {
                 signal,
+                allowRead,
                 images: roundImages,
                 vision: await visionFor(call.name, args),
                 onProgress: (info) => live.update({ ...info, window }),

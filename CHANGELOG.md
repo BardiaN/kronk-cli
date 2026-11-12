@@ -6,6 +6,32 @@ Every entry is one squash-merged pull request, grouped by its [Conventional Comm
 
 Releases before `v0.2.0` predate the convention (#15) and are deliberately not back-filled — see the [releases page](https://github.com/BardiaN/kronk-cli/releases) for those.
 
+## 0.11.0 — 2026-11-12
+
+### Features
+
+- **tools**: ask before reading outside the launch folder ([`9f00aef`](https://github.com/BardiaN/kronk-cli/commit/9f00aefa0435d5c3365ca701acb5b0d70e341184))
+
+### Fixes
+
+- **tools**: read a file through the handle that was checked ([`afa47ce`](https://github.com/BardiaN/kronk-cli/commit/afa47ce331b4f47d0ad92d4c12aae38d8fcfdc0d))
+- **repl**: a line typed before a prompt was shown cannot answer it ([`50988d3`](https://github.com/BardiaN/kronk-cli/commit/50988d3984e268ad99b537db117df7273e7d5b12))
+- **tools**: make a declined read final in the tool result ([`bd129d2`](https://github.com/BardiaN/kronk-cli/commit/bd129d26b09f66ee6eeda9e41bcbe009ff84473a))
+- **tools**: stop search patterns being read as options ([`c94d518`](https://github.com/BardiaN/kronk-cli/commit/c94d518b1377611a0f6b321c1d02c75e0349a240))
+- **tools**: never offer the home folder as a folder grant ([`8dc36a8`](https://github.com/BardiaN/kronk-cli/commit/8dc36a86b5f6c28d3df0ac9dda6cabfeafbd3f78))
+- **tools**: refuse credential stores inside the launch root too ([`eb1cfe6`](https://github.com/BardiaN/kronk-cli/commit/eb1cfe64d723ce4e984a71a04a08e7c9245a8bea))
+- **tools**: match credential stores without regard to case on APFS and NTFS ([`8cdd9f6`](https://github.com/BardiaN/kronk-cli/commit/8cdd9f617be0ca547b8e1119c8de1ad1b9964daa))
+
+### Tests
+
+- **smoke**: drive the REPL without a shell ([`bee759e`](https://github.com/BardiaN/kronk-cli/commit/bee759e860b7eaa45223f88826601cb90a0f6f1a))
+- **smoke**: reading outside the launch folder, asked and answered over a pty ([`c58696c`](https://github.com/BardiaN/kronk-cli/commit/c58696c9f8fa6b6527b41cfaf23557dd3242c41f))
+
+### CI
+
+- bump softprops/action-gh-release from 3.0.3 to 3.0.4 ([#145](https://github.com/BardiaN/kronk-cli/pull/145))
+- bump the codeql-action group with 3 updates ([#144](https://github.com/BardiaN/kronk-cli/pull/144))
+
 ## 0.10.0 — 2026-11-11
 
 ### Features

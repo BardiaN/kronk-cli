@@ -1,10 +1,12 @@
 import { before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync, readdirSync, realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
-  setup, run, repl, screenshotDir,
+  setup, run, repl, replDriven, screenshotDir,
 } from './harness.js';
 
 /**
@@ -286,6 +288,60 @@ describe('showing the model a picture', () => {
     ], { cwd: dir, timeout: 300_000 });
     assert.ok(stdout.includes(`read ${plain}`), shows(stdout, 'a read_file call on the image'));
     assert.match(stdout, RED, shows(stdout, 'red'));
+  });
+});
+
+describe('reading outside the launch folder', () => {
+  // The user's own case, in miniature: launched in one folder, asking about a
+  // file that lives in a sibling. The file's content is a token that appears
+  // nowhere in the prompt, so seeing it in the answer proves the file was read.
+  const TOKEN = 'METER-48213-KRONK';
+  const setupSiblings = () => {
+    const parent = realpathSync(temp('kronk-smoke-outside-'));
+    const launch = join(parent, 'Desktop');
+    const sibling = join(parent, 'Downloads');
+    for (const d of [launch, sibling]) mkdirSync(d);
+    const file = join(sibling, 'compteur.txt');
+    writeFileSync(file, `${TOKEN}\n`);
+    return { launch, file };
+  };
+  const ask = (file) => `Use read_file to read ${file} and quote its first line exactly.`;
+  const ARGS = ['--no-context', '--no-warm', '--steps', '4'];
+
+  test('the model is asked about it, yes once, and the answer holds the file\'s content', async (t) => {
+    if (!ready(t)) return;
+    const { launch, file } = setupSiblings();
+    // -y on purpose: it is about writes and commands, and must not answer this.
+    const out = await replDriven([
+      { when: /›/, send: ask(file) },
+      { when: /read outside [^\n]*Desktop: [^\n]*compteur\.txt/, send: 'y' },
+    ], { args: [...ARGS, '-y'], cwd: launch, until: new RegExp(TOKEN) });
+    const after = out.slice(out.search(/read outside/));
+    assert.ok(after.includes(TOKEN), shows(out, TOKEN));
+    assert.ok(!/declin/i.test(after), shows(out, 'no refusal after a yes'));
+  });
+
+  test('no: it is reported as declined and the file is not read', async (t) => {
+    if (!ready(t)) return;
+    const { launch, file } = setupSiblings();
+    const out = await replDriven([
+      { when: /›/, send: ask(file) },
+      { when: /read outside [^\n]*compteur\.txt/, send: 'n' },
+    ], { args: ARGS, cwd: launch, until: /declin/i });
+    assert.ok(/declin/i.test(out.slice(out.search(/read outside/))), shows(out, 'declined'));
+    assert.ok(!out.includes(TOKEN), `the file was read despite the no:\n${out}`);
+    // And it is asked once: the same path is not put again after a no.
+    assert.equal((out.match(/read outside /g) ?? []).length, 1, shows(out, 'one question'));
+  });
+
+  test('a one-shot has nobody to ask: refused cleanly, exit 0, no hang', async (t) => {
+    if (!ready(t)) return;
+    const { launch, file } = setupSiblings();
+    const { code, stdout, stderr } = await run([...ARGS, '-y', ask(file)], { cwd: launch, timeout: 300_000 });
+    assert.equal(code, 0, `exit was ${code}; stderr:\n${stderr}`);
+    assert.ok(stdout.includes('outside the launch folder'), shows(stdout, 'outside the launch folder'));
+    assert.ok(!stdout.includes(TOKEN), `the file was read with no one to ask:\n${stdout}`);
+    assert.ok(!stdout.includes('read outside '), shows(stdout, 'no prompt'));
   });
 });
 

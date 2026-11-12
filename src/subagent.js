@@ -42,7 +42,8 @@ You have been given one self-contained task and a context of your own.
 - Do not ask questions. There is nobody to answer one. Take the most reasonable reading of the task, act on it, and say what you assumed.
 - Do not stop half way and report progress. Finish the task, then report.
 - Keep the reply under about 30 lines.
-- The working directory is the user's project root. Paths are relative to it. You are already inside it. Do not \`cd\` above it.`;
+- The working directory is the user's project root. Paths are relative to it. You are already inside it. Do not \`cd\` above it.
+- A path the task names outside that folder is fine to read: read_file, list_dir and search ask the user for permission themselves. If the result says the read was declined or is not available, say so in your reply rather than looking for a way around it.`;
 
 /**
  * The roles a sub-agent can be given.
@@ -297,7 +298,7 @@ async function limitsFor(id, fetchLimits) {
  * delegation is not a way to get a command past the user.
  */
 export async function runTask(args, {
-  run, model, signal, approve, grant, out = console.log, maxSteps = config.subagentSteps,
+  run, model, signal, approve, grant, readAccess, out = console.log, maxSteps = config.subagentSteps,
   // Injected the same way `run` and `out` are, and for the same reason: the
   // pane's behaviour is a screen behaviour, and a test has no screen.
   pane: makePane = livePane,
@@ -380,6 +381,8 @@ export async function runTask(args, {
       // asked on a clear screen and nothing redraws over it while it waits.
       approve: pane.shield(approve),
       grant: pane.shield(grant),
+      // A read outside the launch folder is the user's call here as well.
+      readAccess: pane.shield(readAccess),
       // No MCP: a local model already struggles past ~25 tools, and the
       // sub-agent's list is meant to be the short one.
       mcp: null,

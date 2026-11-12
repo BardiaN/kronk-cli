@@ -65,7 +65,10 @@ A CI runner has no Kronk server, no model, and no twenty minutes to spare.
 ## When to run it
 
 Before a release, and after any change to `src/pane.js`, `src/ui.js`, `src/theme.js` or
-`src/prompt.js` — the terminal behaviour is exactly what a piped test cannot see.
+`src/prompt.js` — the terminal behaviour is exactly what a piped test cannot see. The same goes
+for `src/readaccess.js` and the question it puts to the user: a prompt that appears only after the
+model has chosen to ask cannot be pre-typed, so `replDriven()` in `harness.js` types an answer only
+once the screen shows the question it answers.
 
 ## Reading a failure
 

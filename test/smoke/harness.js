@@ -251,43 +251,25 @@ export async function run(args, {
   return { code, stdout: strip(stdout), stderr: strip(stderr) };
 }
 
-/**
- * The pacing pipeline `repl()` runs under `bash -c`. It is a constant: the
- * CLI path and its arguments arrive as positional parameters (`"$@"`) and the
- * timings through the environment, so nothing a caller or `SMOKE_MODEL`
- * supplies is ever parsed as shell text.
- */
-const REPL_PIPELINE = '( perl -e \'select(undef,undef,undef,$ENV{SMOKE_SETTLE})\'; '
-  + 'printf \'%s\' "$SMOKE_REPL_PAYLOAD"; '
-  + 'perl -e \'select(undef,undef,undef,$ENV{SMOKE_AFTER})\' ) '
-  + '| script -q /dev/null node "$@"';
+/** Runs argv[1:] on a pty and exits with its status; stdin and stdout are relayed. */
+const PTY_SPAWN = 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))';
 
 /**
  * Drive the interactive REPL through a real pty, pacing the input.
  *
  * A piped run never takes the TTY path at all — src/index.js checks
  * `stdin.isTTY` and falls straight into one-shot mode — so exercising the
- * REPL means putting a real pty in front of it, which is what `script`
- * does. And with no prompt already on argv, stdin to that pty *is* the
- * prompt: feeding it eagerly turns the whole run into a one-shot, and
- * `/exit` piped in that way exits before the banner is ever printed. The
- * fix is the same one the reference script used: wait for the banner and
- * the model load to settle before typing anything, then wait again after
- * the last line so `script` does not see EOF and tear the pty down before
- * the REPL has processed what was just sent.
+ * REPL means putting a real pty in front of it. With no prompt already on argv,
+ * stdin to that pty *is* the prompt: feeding it eagerly turns the whole run into
+ * a one-shot, and `/exit` piped in that way exits before the banner is ever
+ * printed. So nothing is typed until the banner and the model load have had
+ * `settle` seconds, and the pty is kept open for `after` seconds past the last
+ * line (then closed with Ctrl-D) so it is not torn down before the REPL has
+ * processed what was just sent.
  *
- * The lines are carried through an environment variable and read back with
- * `printf '%s'` rather than spliced into the shell command as text, so a
- * check is free to feed a prompt containing quotes or `$` without it being
- * interpreted as shell syntax.
- *
- * macOS-only, deliberately: `script -q /dev/null <cmd> [args...]` is the BSD
- * `script`'s calling convention (quiet, throwaway typescript file, then the
- * command to run). GNU `script`, the one Linux ships, wants `-c "<cmd
- * string>"` instead of a trailing argv, so this exact invocation does not
- * port there unchanged. Nothing here detects the difference or branches on
- * it — every machine this suite has run on so far is a Mac, and that is the
- * whole reason it is not handled rather than a decision that it should not be.
+ * No shell is involved anywhere: the pty comes from python's `pty` module,
+ * started with an argv array, so a prompt containing quotes or `$` is only ever
+ * bytes written to a terminal. Needs python3.
  */
 export async function repl(lines, {
   args = [], env = {}, settle = 7, after = 2.5, timeout = 240_000, cwd = REPO,
@@ -295,17 +277,90 @@ export async function repl(lines, {
   const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
   delete fullEnv.KRONK_MODEL;
   Object.assign(fullEnv, env);
-  fullEnv.SMOKE_REPL_PAYLOAD = lines.map((l) => `${l}\n`).join('');
-  fullEnv.SMOKE_SETTLE = String(settle);
-  fullEnv.SMOKE_AFTER = String(after);
-
-  // `bash -c <script> <$0> <$1...>`: everything after the script is argv.
-  const argv = ['-c', REPL_PIPELINE, 'bash', CLI, ...args];
-  const { stdout, stderr, timedOut } = await spawnCapture('bash', argv, {
-    env: fullEnv, cwd, timeout,
+  const child = spawn('python3', ['-I', '-c', PTY_SPAWN, process.execPath, CLI, ...args], {
+    cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
+  let raw = '';
+  let closed = false;
+  child.stdout.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stdin.on('error', () => {});
+  const done = new Promise((resolve) => child.on('close', () => { closed = true; resolve(); }));
+  const timers = [];
+  const later = (fn, seconds) => timers.push(setTimeout(fn, seconds * 1000));
+  later(() => child.stdin.write(lines.map((l) => `${l}\n`).join('')), settle);
+  later(() => { if (!closed) child.stdin.write('\x04'); }, settle + after);
+  let timedOut = false;
+  later(() => { timedOut = true; child.kill('SIGKILL'); }, timeout / 1000);
+  await done;
+  timers.forEach(clearTimeout);
   if (timedOut) throw new Error(`repl(${JSON.stringify(lines)}) did not exit within ${timeout}ms`);
-  return strip(stdout + stderr);
+  return strip(raw);
+}
+
+/**
+ * Drive the REPL through a pty the way a person would: type a line only once
+ * the screen shows what it answers.
+ *
+ * `repl()` pre-loads its input and paces it by the clock, which cannot answer a
+ * question that appears only after the model has chosen to ask it. Here each
+ * step is `{ when, send }`: wait until `when` (a RegExp) matches output that
+ * arrived after the previous step's match, then type `send`. After the last
+ * step it waits for `until` if one is given, types `/exit`, and returns
+ * everything the terminal showed, ANSI stripped. A step that never matches
+ * rejects with the output so far, because a rerun costs minutes.
+ *
+ * Needs python3 for the pty; no shell is involved.
+ */
+export async function replDriven(steps, {
+  args = [], env = {}, cwd = REPO, until = null, timeout = 240_000,
+} = {}) {
+  const fullEnv = { ...process.env, NO_COLOR: '1', KRONK_THEME: 'dark' };
+  delete fullEnv.KRONK_MODEL;
+  Object.assign(fullEnv, env);
+  // No shell: an argv array straight to python's pty module, which gives the
+  // REPL a real terminal and copes with the socket node hands a child as its
+  // stdin (`script` does not: it fails on tcgetattr).
+  const child = spawn('python3', ['-I', '-c', PTY_SPAWN, process.execPath, CLI, ...args], {
+    cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let raw = '';
+  let closed = false;
+  child.stdout.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.stderr.setEncoding('utf8').on('data', (d) => { raw += d; });
+  child.on('close', () => { closed = true; });
+  child.stdin.on('error', () => {});
+  const shown = () => strip(raw);
+  const deadline = Date.now() + timeout;
+
+  const waitFor = async (re, from, what) => {
+    for (;;) {
+      const m = shown().slice(from).match(re);
+      if (m) return from + m.index + m[0].length;
+      if (closed || Date.now() > deadline) {
+        child.kill('SIGKILL');
+        throw new Error(`replDriven: ${closed ? 'the REPL exited' : 'timed out'} waiting for ${what}; output so far:\n${shown()}`);
+      }
+      await sleep(100);
+    }
+  };
+
+  let at = 0;
+  try {
+    for (const { when, send } of steps) {
+      at = await waitFor(when, at, String(when));
+      child.stdin.write(`${send}\n`);
+    }
+    if (until) at = await waitFor(until, at, String(until));
+    // The prompt before /exit, so the line is read by the REPL and not by a turn.
+    await waitFor(/›/, at, 'the prompt');
+    child.stdin.write('/exit\n');
+    const grace = Date.now() + 20_000;
+    while (!closed && Date.now() < grace) await sleep(100);
+  } finally {
+    if (!closed) child.kill('SIGKILL');
+  }
+  return shown();
 }
 
 // ---- a picture to show the model -------------------------------------------

@@ -61,6 +61,17 @@ export function extraPaths(value, home) {
     .map((p) => (p.startsWith('~/') ? join(home, p.slice(2)) : p));
 }
 
+/**
+ * Every path the sandbox treats as a credential store: the built-in key
+ * material plus whatever KRONK_SANDBOX_DENY adds. The file tools use this to
+ * stay out of them when a read reaches outside the launch folder, so the one
+ * list decides for `bash` and for `read_file` alike.
+ */
+export function secretPaths(home, env = process.env) {
+  return SECRET_DIRS.concat(SECRET_FILES).map((p) => join(home, p))
+    .concat(extraPaths(env.KRONK_SANDBOX_DENY, home));
+}
+
 /** Seatbelt string literals are double-quoted; only `\` and `"` need escaping. */
 const sb = (p) => `"${p.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 

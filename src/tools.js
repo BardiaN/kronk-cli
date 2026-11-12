@@ -1,10 +1,13 @@
-import { readFile, writeFile, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, stat, open } from 'node:fs/promises';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, relative, dirname, basename, isAbsolute, join } from 'node:path';
-import { realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  realpathSync, mkdirSync, existsSync, readFileSync, writeFileSync, statSync, constants,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { detectBackend, sandboxArgv, cacheDirs } from './sandbox.js';
+import { detectBackend, sandboxArgv, cacheDirs, secretPaths } from './sandbox.js';
+import { decideRead, grantFolder, isWide, refusalText, secretsUnder } from './readaccess.js';
 import { config } from './config.js';
 import { setPlan, MAX_ITEMS } from './plan.js';
 import { c } from './ui.js';
@@ -36,6 +39,15 @@ export const session = {
   // restart. That is what makes asking at the moment of need possible at all.
   grants: new Set(config.sandboxReadable),
   declined: new Set(),
+  // Read-only access outside the launch root, for this run only and never
+  // written anywhere. `readFolders` are directories the user granted for the
+  // session, `readFiles` are single files they attached with /file, and
+  // `readDeclined` are paths they were asked about and refused. These are not
+  // `grants`: that set lifts a sandbox denial for `bash`, this one lets the file
+  // tools look, and neither may stand in for the other.
+  readFolders: new Set(),
+  readFiles: new Set(),
+  readDeclined: new Set(),
 };
 
 /**
@@ -156,7 +168,7 @@ export function declineGrants(paths) {
  * containment check then fails and `cd` silently stops persisting.
  */
 function real(p) {
-  try { return realpathSync(p); } catch { return p; }
+  try { return realpathSync.native(p); } catch { return p; }
 }
 
 /**
@@ -174,7 +186,7 @@ function realDeep(abs) {
   const tail = [];
   let cur = abs;
   for (;;) {
-    try { return tail.length ? resolve(realpathSync(cur), ...tail) : realpathSync(cur); }
+    try { return tail.length ? resolve(realpathSync.native(cur), ...tail) : realpathSync.native(cur); }
     catch { /* does not exist yet — walk up */ }
     const parent = dirname(cur);
     if (parent === cur) return abs;
@@ -208,6 +220,92 @@ export function safe(p) {
 }
 
 /**
+ * Read a text file through one handle that was checked.
+ *
+ * A FIFO or a device would block a read forever, and outside the launch folder
+ * nothing else has vouched for the path. Checking with `stat` and reading with
+ * `readFile` leaves a gap in which the path can become one, so the file is
+ * opened once (O_NONBLOCK, so opening a FIFO cannot itself block), the handle
+ * is checked, and the read goes through the same handle. A directory falls
+ * through to the read, which reports it as it always did.
+ */
+async function readRegular(file, label) {
+  const fh = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() && !st.isDirectory()) return `error: ${label} is not a regular file`;
+    return await fh.readFile('utf8');
+  } finally { await fh.close(); }
+}
+
+/** `~` and `~/x` to the home directory; anything else untouched. */
+const untilde = (p) => (p === '~' ? homedir() : String(p).startsWith('~/') ? join(homedir(), String(p).slice(2)) : p);
+
+/**
+ * Where a read-only tool call stands against the launch root, the session's
+ * grants and the credential list. `interactive` says whether anyone could be
+ * asked, which turns an unruled path from a refusal into a question.
+ *
+ * Reads only. `safe()` above stays the gate for every write.
+ */
+const isDirWide = (abs, kind, isDir) => isWide(kind === 'read_file' || !isDir ? dirname(abs) : abs, real(homedir()));
+
+const CASE_BLIND = process.platform === 'darwin' || process.platform === 'win32';
+
+export function readCheck(p, { kind = 'read_file', allow, interactive = false } = {}) {
+  const abs = realDeep(resolve(real(session.cwd), untilde(p)));
+  const secrets = secretPaths(homedir()).map(realDeep);
+  const verdict = decideRead({
+    abs, kind, root: real(session.root), secrets, interactive,
+    ci: CASE_BLIND,
+    folders: [...session.readFolders], files: [...session.readFiles],
+    once: allow ? [...allow] : [], declined: [...session.readDeclined],
+  });
+  let isDir = false;
+  try { isDir = statSync(abs).isDirectory(); } catch { /* does not exist */ }
+  return {
+    abs, ...verdict,
+    // For a search to leave out: stores that sit below the directory it walks.
+    skip: kind === 'search' ? secretsUnder(abs, secrets, CASE_BLIND) : [],
+    folder: verdict.action === 'ask' ? grantFolder(abs, kind, isDir, real(homedir())) : null,
+    wide: verdict.action === 'ask' && isDirWide(abs, kind, isDir),
+  };
+}
+
+/** The resolved path for a read, or a throw that tells the model what happened. */
+export function safeRead(p, { kind = 'read_file', allow } = {}) {
+  const v = readCheck(p, { kind, allow });
+  if (v.action === 'allow') return v.abs;
+  throw new Error(refusalText(v.reason, v.abs, real(session.root)));
+}
+
+/** The path a read-only call would touch, or null when it touches none. */
+export function readTarget(name, args) {
+  if (name === 'read_file') return typeof args?.path === 'string' ? args.path : null;
+  if (name === 'list_dir' || name === 'search') return typeof (args?.path ?? '.') === 'string' ? (args?.path ?? '.') : null;
+  return null;
+}
+
+/** Allow reads under `dir` for the rest of this run. */
+export function grantReadFolder(dir) { session.readFolders.add(dir); session.readDeclined.clear(); }
+
+/** The user attached this file themselves: it needs no question. */
+export function consentFile(p) {
+  const abs = realDeep(resolve(real(session.cwd), untilde(p)));
+  if (readCheck(abs).reason !== 'inside') session.readFiles.add(abs);
+  return abs;
+}
+
+/** Remember a refusal so the same path is not asked about twice. */
+export function declineRead(abs) { session.readDeclined.add(abs); }
+
+/** What has been opened up outside the launch root this run, for /context. */
+export const readGrantLines = () => [
+  ...[...session.readFolders].map((d) => `${d}/ (folder)`),
+  ...[...session.readFiles].map((f) => `${f} (attached)`),
+];
+
+/**
  * A tool definition in the shape the OpenAI-compatible API wants.
  *
  * Exported because src/subagent.js defines a tool too — one that is only
@@ -219,7 +317,7 @@ export const def = (name, description, properties, required) => ({
 });
 
 export const TOOLS = [
-  def('read_file', 'Read a UTF-8 text file relative to the working directory. A PNG, JPEG, WebP or GIF (10 MB at most) is shown to you as an image instead, if your model can see.',
+  def('read_file', 'Read a UTF-8 text file relative to the working directory, or at any path: one outside the launch folder asks the user first. A PNG, JPEG, WebP or GIF (10 MB at most) is shown to you as an image instead, if your model can see.',
     { path: { type: 'string' } }, ['path']),
 
   def('write_file', 'Create a new text file, or replace one wholesale. To change part of an existing file use edit_file. Requires user approval.',
@@ -239,10 +337,10 @@ export const TOOLS = [
     },
     ['path', 'old_string', 'new_string']),
 
-  def('list_dir', 'List entries in a directory. Defaults to the working directory.',
+  def('list_dir', 'List entries in a directory. Defaults to the working directory. A path outside the launch folder asks the user first.',
     { path: { type: 'string' } }, []),
 
-  def('search', 'Search file contents with a regular expression (ripgrep-style). Returns matching lines with file:line prefixes.',
+  def('search', 'Search file contents with a regular expression (ripgrep-style). Returns matching lines with file:line prefixes. A path outside the launch folder asks the user first.',
     { pattern: { type: 'string' }, path: { type: 'string' } }, ['pattern']),
 
   def('bash', 'Run a shell command in the working directory. Requires user approval.',
@@ -887,7 +985,7 @@ export async function runTool(name, args, opts = {}) {
     switch (name) {
       case 'read_file': {
         // Bytes decide, not the name: macOS screenshots have no extension.
-        const img = opts.images ? await loadImage(args.path, { optional: true }) : null;
+        const img = opts.images ? await loadImage(args.path, { optional: true, allow: opts.allowRead }) : null;
         if (img && opts.vision === false) {
           return `${IMAGE_NOT_SHOWN} ${args.path} is an image (${img.mime}, ${img.bytes.toLocaleString()} bytes) but the active model has no vision support, so it could not be shown. Do not describe or guess its contents; tell the user the image could not be viewed and that a vision model is needed.`;
         }
@@ -895,7 +993,8 @@ export async function runTool(name, args, opts = {}) {
           opts.images.push(img.part);
           return `image attached: ${args.path} (${img.mime}, ${img.bytes.toLocaleString()} bytes). It follows this result as a user message.`;
         }
-        return clip(await readFile(safe(args.path), 'utf8'));
+        const file = safeRead(args.path, { kind: 'read_file', allow: opts.allowRead });
+        return clip(await readRegular(file, args.path));
       }
 
       case 'write_file':
@@ -925,7 +1024,7 @@ export async function runTool(name, args, opts = {}) {
       }
 
       case 'list_dir': {
-        const dir = safe(args.path ?? '.');
+        const dir = safeRead(args.path ?? '.', { kind: 'list_dir', allow: opts.allowRead });
         const names = await readdir(dir);
         const rows = await Promise.all(names.map(async (n) => {
           try {
@@ -939,14 +1038,18 @@ export async function runTool(name, args, opts = {}) {
       case 'search': {
         // Went straight to ripgrep unchecked, so `search` with an absolute path
         // read anything on the machine while read_file was busy refusing to.
-        const where = safe(args.path ?? '.');
+        const where = safeRead(args.path ?? '.', { kind: 'search', allow: opts.allowRead });
+        // A search from the home folder walks past ~/.ssh: leave key material out.
+        const { skip } = readCheck(args.path ?? '.', { kind: 'search', allow: opts.allowRead });
+        const rgSkip = skip.flatMap((s) => ['-g', `!${relative(where, s).replace(/[*?[\]{}!\\]/g, '\\$&')}`]);
+        const grepSkip = skip.flatMap((s) => [`--exclude-dir=${basename(s)}`, `--exclude=${basename(s)}`]);
         // Both tools exit 1 to mean "nothing matched", which is an answer and
         // not a failure. Reported as an error the model stops believing the
         // tool, and spends its step budget re-phrasing and re-reading rather
         // than using the fact it was just handed.
         const NOTHING = '(no matches)';
         try {
-          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', args.pattern, where]);
+          const { stdout } = await exec('rg', ['-n', '--no-heading', '-m', '200', ...rgSkip, '--', args.pattern, where]);
           return clip(stdout) || NOTHING;
         } catch (e) {
           if (e.code === 1) return NOTHING;
@@ -959,7 +1062,7 @@ export async function runTool(name, args, opts = {}) {
             // grep drops the filename when it is given exactly one file, and
             // this tool promises `file:line` prefixes — BSD grep prints them
             // either way, which is why a macOS-only check would not see it.
-            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', args.pattern, where]);
+            const { stdout } = await exec('grep', ['-rn', '-H', '-E', '-m', '200', ...grepSkip, '--', args.pattern, where]);
             return clip(stdout) || NOTHING;
           } catch (err) {
             if (err.code === 1) return NOTHING;

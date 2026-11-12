@@ -1,6 +1,7 @@
 import { open } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { basename, extname } from 'node:path';
-import { safe } from './tools.js';
+import { safeRead } from './tools.js';
 
 /** Largest image `/file` will attach. The base64 form is a third bigger again. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -33,14 +34,16 @@ export function imagePart(buf, mime, name) {
 }
 
 /**
- * Read an image from inside the launch root and turn it into a content part.
+ * Read an image and turn it into a content part. A path outside the launch root
+ * must have been allowed (see src/readaccess.js) or this throws.
  * Throws a plain-language error for a file that is too big or not an image.
  */
-export async function loadImage(path, { optional = false } = {}) {
-  const abs = safe(path);
+export async function loadImage(path, { optional = false, allow } = {}) {
+  const abs = safeRead(path, { kind: 'read_file', allow });
   // One handle for the size check and the read: a stat followed by a separate
   // readFile lets the file change between the two.
-  const fh = await open(abs, 'r');
+  // O_NONBLOCK so that opening a FIFO cannot hang; the fstat below refuses it.
+  const fh = await open(abs, constants.O_RDONLY | constants.O_NONBLOCK);
   let buf;
   try {
     const st = await fh.stat();

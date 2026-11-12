@@ -17,7 +17,8 @@ import { mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage } fr
 import { loadImage, buildContent, textOf, hasImage, warnNoVisionOnce } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
-import { resolveSandbox, sandbox, killAllJobs, TOOLS } from './tools.js';
+import { resolveSandbox, sandbox, killAllJobs, TOOLS, consentFile, readGrantLines, session as toolSession } from './tools.js';
+import { readPromptHead, readPromptChoices, parseReadAnswer } from './readaccess.js';
 import { parseArgv } from './argv.js';
 import { resolveApprovalMode, decideApproval } from './approval.js';
 import { deferredPrompt } from './prompt.js';
@@ -377,7 +378,8 @@ async function showModels() {
 const HELP = `
   ${c.bold('/models')}          list models Kronk is serving
   ${c.bold('/model <id>')}      switch model
-  ${c.bold('/file <path>')}     add a file as context (quotes, ~, and a hidden .png are fine); an image rides with your next message
+  ${c.bold('/file <path>')}     add a file as context (quotes, ~, and a hidden .png are fine); an image rides with your next message.
+                    A path outside the launch folder is fine here: typing it is your consent.
   ${c.bold('/thinking')}        show/hide the model's reasoning
   ${c.bold('/think')}           turn reasoning off entirely (much faster)
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
@@ -675,9 +677,22 @@ async function main() {
     if (verdict !== null) return verdict;
     term.approval();
     let a;
-    try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `))).trim().toLowerCase(); }
+    try { a = (await rl.question(c.yellow(`  approve ${name}? [y/N] `), { fresh: true })).trim().toLowerCase(); }
     finally { term.working(); }
     return a === 'y' || a === 'yes';
+  };
+
+  // A read outside the launch folder is a question, not a refusal — but only to
+  // someone who can answer it. A pipe, or --deny, gets no prompt and the tool
+  // refuses on its own. --yes/--auto are about writes and commands, so they do
+  // not answer this one: with a terminal, it is still asked.
+  const readAccess = APPROVAL === 'deny' || !(stdin.isTTY && stdout.isTTY) ? null : async ({ path, folder, wide, root }) => {
+    console.log(c.yellow(`  ${readPromptHead(root, path)}`));
+    term.approval();
+    let a;
+    try { a = await rl.question(c.yellow(`  ${readPromptChoices(folder, wide)}`), { fresh: true }); }
+    finally { term.working(); }
+    return parseReadAnswer(a, Boolean(folder));
   };
 
   // Read-only, and said so: the answer to "why is my gh broken" should not be a
@@ -693,7 +708,7 @@ async function main() {
     term.approval();
     let a;
     try {
-      a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] ')))
+      a = (await rl.question(c.yellow('  allow read-only access for this session? [y/N/always] '), { fresh: true }))
         .trim().toLowerCase();
     } finally { term.working(); }
     if (a === 'always' || a === 'a') return 'always';
@@ -862,6 +877,7 @@ async function main() {
       contextLines({
         messageTokens, toolTokens, images, measured: config.lastUsed,
         window: config.contextWindow, native: config.nativeContext, messages: messages.length,
+        reads: readGrantLines(), root: toolSession.root,
       }).forEach((l) => console.log(l));
       continue;
     }
@@ -891,9 +907,17 @@ async function main() {
     let inlined = null;
     let inlineImages = [];
     const parsed = mentionsFile(input) ? await parseFileRefs(input, resolves) : null;
+    // Typing a path after /file is the consent for it, wherever it lives. Only
+    // here, once a reference is really being attached: the probe that guesses
+    // where a reference ends must not open up every path it tries.
+    const attach = async (arg) => {
+      const r = await resolveFileArg(arg);
+      consentFile(r.path);
+      return r;
+    };
     if (parsed && !parsed.refs.length) inlined = parsed.segments.map((s) => s.text).join('');
     else if (parsed && !isBareRef(parsed)) {
-      const built = await buildFileMessage(parsed, { load: loadImage, read: readFile });
+      const built = await buildFileMessage(parsed, { resolve: attach, load: loadImage, read: readFile });
       built.notes.forEach((n) => console.log(c.grey(`  ${n}`)));
       if (built.errors) {
         built.errors.forEach((e) => console.log(c.red(`  ${e}`)));
@@ -907,7 +931,7 @@ async function main() {
     }
     if (parsed?.refs.length && isBareRef(parsed)) {
       try {
-        const { path, note } = await resolveFileArg(parsed.refs[0]);
+        const { path, note } = await attach(parsed.refs[0]);
         if (note) console.log(c.grey(`  ${note}`));
         const img = await loadImage(path, { optional: true });
         if (img) {
@@ -954,7 +978,7 @@ async function main() {
     }
     try {
       await runTurn({
-        messages, model: config.model, signal: ac.signal, approve, grant, mcp, auto: isAuto(),
+        messages, model: config.model, signal: ac.signal, approve, grant, readAccess, mcp, auto: isAuto(),
         steering,
         onSteer: (n) => console.log(c.grey(`  ↳ ${n === 1 ? 'your note' : `${n} notes`} sent to the model`)),
       });

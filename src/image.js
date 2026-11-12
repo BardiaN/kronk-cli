@@ -5,7 +5,8 @@ import { safe } from './tools.js';
 /** Largest image `/file` will attach. The base64 form is a third bigger again. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
-const EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+export const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+const EXTENSIONS = new Set(IMAGE_EXTENSIONS);
 
 export const isImagePath = (p) => EXTENSIONS.has(extname(p).toLowerCase());
 
@@ -35,7 +36,7 @@ export function imagePart(buf, mime, name) {
  * Read an image from inside the launch root and turn it into a content part.
  * Throws a plain-language error for a file that is too big or not an image.
  */
-export async function loadImage(path) {
+export async function loadImage(path, { optional = false } = {}) {
   const abs = safe(path);
   // One handle for the size check and the read: a stat followed by a separate
   // readFile lets the file change between the two.
@@ -45,6 +46,18 @@ export async function loadImage(path) {
     const st = await fh.stat();
     const { size } = st;
     if (!st.isFile()) throw new Error(`${path} is not a regular file`);
+    // An empty file has no magic bytes, so it would pass for an empty text file
+    // and the model would be told the "image" is blank.
+    if (size === 0 && (!optional || isImagePath(path))) {
+      throw new Error(`${path} is empty (0 bytes), so there is no image in it`);
+    }
+    if (optional) {
+      // Peek at the magic bytes through the same handle, so a text file is
+      // never read in full just to learn it is not an image.
+      const head = Buffer.alloc(12);
+      const { bytesRead } = await fh.read(head, 0, 12, 0);
+      if (!sniffMime(head.subarray(0, bytesRead))) return null;
+    }
     if (size > MAX_IMAGE_BYTES) {
       throw new Error(`${path} is ${(size / 1048576).toFixed(1)} MB; images are capped at ${MAX_IMAGE_BYTES / 1048576} MB`);
     }
@@ -57,10 +70,37 @@ export async function loadImage(path) {
   return { part: imagePart(buf, mime, basename(path)), mime, bytes: buf.length };
 }
 
+/** Starts every read_file result for an image the active model cannot be shown. */
+export const IMAGE_NOT_SHOWN = 'image NOT shown:';
+
+const warned = new Set();
+
+/**
+ * Tell the user, once per model, that an attached image is wasted on it.
+ * `print` receives the line; returns whether it printed.
+ */
+export function warnNoVisionOnce(model, print) {
+  if (warned.has(model)) return false;
+  warned.add(model);
+  print(`  warning: ${model} has no vision support (Kronk reports no multimodal projector), so it cannot see images. Switch with /model to a model tagged "vision".`);
+  return true;
+}
+
 /** User-message content: the plain string when there are no images. */
 export function buildContent(text, parts) {
   if (!parts?.length) return text;
   return [{ type: 'text', text }, ...parts];
+}
+
+/**
+ * The message that carries images a tool produced. A chat `tool` message holds
+ * only text, so the harness follows the round's tool results with a `user`
+ * message instead. Null when there is nothing to carry.
+ */
+export function imageMessage(parts, source = 'read_file') {
+  if (!parts?.length) return null;
+  const names = parts.map((p) => p.name ?? 'image').join(', ');
+  return { role: 'user', content: buildContent(`[image from ${source}: ${names}]`, parts) };
 }
 
 const placeholder = (p) => `[image: ${p.name ?? 'image'}]`;

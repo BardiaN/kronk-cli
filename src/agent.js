@@ -1,4 +1,4 @@
-import { streamChat } from './client.js';
+import { streamChat, modelSeesImages } from './client.js';
 import { DENIED_BY_SETTINGS, deniedBySettingsMessage } from './approval.js';
 import {
   TOOLS, NEEDS_APPROVAL, runTool, describe, preview, mcpNeedsApproval,
@@ -6,7 +6,7 @@ import {
 } from './tools.js';
 import { config, shouldPreserveThinking } from './config.js';
 import { forRequest } from './reasoning.js';
-import { forWire } from './image.js';
+import { forWire, imageMessage, IMAGE_NOT_SHOWN, warnNoVisionOnce } from './image.js';
 import { c, fmtUsage, spinner, liveLine, toolResultLines } from './ui.js';
 import { markdownStream } from './markdown.js';
 import { compact, isOverflow, report } from './compact.js';
@@ -301,6 +301,11 @@ export async function runTurn({
       if (batch.length > 1) batchOf.set(batch[0], batch);
     }
     const handled = new Set();
+    // Only read_file shows images, and only the first answer costs a request.
+    const visionFor = (name) => (name === 'read_file' ? modelSeesImages(model) : undefined);
+    // Images read_file produced this round, sent as one user message after the
+    // tool results (a tool message cannot carry an image).
+    const roundImages = [];
 
     for (const call of calls) {
       if (handled.has(call)) continue;
@@ -327,8 +332,11 @@ export async function runTurn({
           const bArgs = parsed.get(b);
           const pre = await runPre(config.hooks, b.name, bArgs);
           if (pre.blocked) return { pre, result: `error: blocked by a pre-tool hook: ${pre.message}` };
-          const result = await runTool(b.name, bArgs);
-          return { pre, result, post: await runPost(config.hooks, b.name, bArgs, result) };
+          const images = [];
+          const vision = await visionFor(b.name, bArgs);
+          const result = await runTool(b.name, bArgs, { images, vision });
+          if (result.startsWith(IMAGE_NOT_SHOWN)) warnNoVisionOnce(model, (l) => out(c.yellow(l)));
+          return { pre, result, images, post: await runPost(config.hooks, b.name, bArgs, result) };
         });
         for (const [i, b] of batch.entries()) {
           const { pre, post } = ran[i];
@@ -345,6 +353,7 @@ export async function runTurn({
           if (result.startsWith('error:')) toolResultLines(result).forEach((l) => out(l));
           else out(c.grey(`  ✓ ${result.split('\n').length} lines`));
           messages.push({ role: 'tool', tool_call_id: b.id, content: result });
+          if (!pre.blocked) roundImages.push(...ran[i].images);
         }
         continue;
       }
@@ -456,11 +465,14 @@ export async function runTurn({
             ? await mcp.call(call.name, args)
             : await runTool(call.name, args, {
                 signal,
+                images: roundImages,
+                vision: await visionFor(call.name, args),
                 onProgress: (info) => live.update({ ...info, window }),
               });
         } finally {
           live.done();
         }
+        if (typeof result === 'string' && result.startsWith(IMAGE_NOT_SHOWN)) warnNoVisionOnce(model, (l) => out(c.yellow(l)));
       }
 
       // set_plan hands back a rendering of what the harness just stored; paying a
@@ -486,6 +498,8 @@ export async function runTurn({
     // On the last tool result rather than in a message of its own, so the
     // round only ever adds to the prompt. Nothing already sent is touched.
     if (usePlan) carryChecklist(messages);
+    const seen = imageMessage(roundImages);
+    if (seen) messages.push(seen);
     // After the checklist, which belongs on the last tool result, and before
     // `onStep`, so the recorded transcript is the one the next request sends.
     if (steering?.length && !signal?.aborted) {

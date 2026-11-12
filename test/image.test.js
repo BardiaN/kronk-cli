@@ -90,6 +90,11 @@ test('loadImage enforces the root, the size cap and the magic bytes', async () =
 
     await assert.rejects(loadImage('.'), /not a regular file/);
 
+    // optional: a file that is not an image is null, not an error
+    writeFileSync(join(dir, 'note'), 'just text, long enough to be read');
+    assert.equal(await loadImage('note', { optional: true }), null);
+    assert.equal((await loadImage('a.png', { optional: true })).mime, 'image/jpeg');
+
     await assert.rejects(loadImage('../outside.png'), /outside/);
   } finally {
     Object.assign(session, saved);

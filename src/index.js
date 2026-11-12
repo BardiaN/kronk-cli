@@ -2,24 +2,26 @@
 import { stdin, stdout } from 'node:process';
 import { homedir } from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure } from './config.js';
-import { listModels, listModelDetails, listLoaded, modelLimits, tokenize } from './client.js';
+import { config, DEFAULT_MODEL, applyLimits, warnIfInsecure, warnConfigProblems } from './config.js';
+import { listModels, listModelDetails, listLoaded, modelLimits, tokenize, modelSeesImages } from './client.js';
 import { pickDefault, chatModels, ensureLoaded } from './boot.js';
 import { resolveModel } from './resolve.js';
 import { runTurn, SYSTEM, SYSTEM_AUTO } from './agent.js';
 import { isSteering } from './steer.js';
-import { c, banner, fmtContext, statusLine } from './ui.js';
+import { c, banner, statusLine, contextLines } from './ui.js';
 import { resolveTheme, theme, useTheme } from './theme.js';
 import { projectContext } from './context.js';
 import { forRequest } from './reasoning.js';
-import { isImagePath, loadImage, buildContent, textOf, hasImage } from './image.js';
+import { resolveFileArg, classifyBytes } from './filearg.js';
+import { mentionsFile, parseFileRefs, isBareRef, resolves, buildFileMessage } from './fileref.js';
+import { loadImage, buildContent, textOf, hasImage, warnNoVisionOnce } from './image.js';
 import { compact, report } from './compact.js';
 import { loadServers, McpHub, reportFailures } from './mcp.js';
-import { resolveSandbox, sandbox, killAllJobs } from './tools.js';
+import { resolveSandbox, sandbox, killAllJobs, TOOLS } from './tools.js';
 import { parseArgv } from './argv.js';
 import { resolveApprovalMode, decideApproval } from './approval.js';
 import { deferredPrompt } from './prompt.js';
-import { AGENTS, setServedModels } from './subagent.js';
+import { AGENTS, setServedModels, taskTools } from './subagent.js';
 import { runLines, transcriptLines, sweep, cleanup } from './tasklog.js';
 import { runSetup, runKronk } from './setup.js';
 import { runRescue } from './rescue.js';
@@ -30,7 +32,7 @@ import {
 } from './presets.js';
 import { termStatus } from './termstatus.js';
 import {
-  newSessionId, findSession, listSessions, listLines, summary, trySave, storable,
+  newSessionId, findSession, sessionElsewhere, unreadableSessions, listSessions, listLines, summary, trySave, storable,
   restoreMessages, hasConversation, countTurns,
 } from './session.js';
 
@@ -375,7 +377,7 @@ async function showModels() {
 const HELP = `
   ${c.bold('/models')}          list models Kronk is serving
   ${c.bold('/model <id>')}      switch model
-  ${c.bold('/file <path>')}     add a file as context; an image (png/jpg/webp/gif) rides with your next message
+  ${c.bold('/file <path>')}     add a file as context (quotes, ~, and a hidden .png are fine); an image rides with your next message
   ${c.bold('/thinking')}        show/hide the model's reasoning
   ${c.bold('/think')}           turn reasoning off entirely (much faster)
   ${c.bold('/auto')}            autonomous mode: auto-approve tools, run to completion
@@ -488,6 +490,8 @@ async function oneShot(prompt) {
 async function main() {
   // Before anything reaches the network, on every path through the program.
   warnIfInsecure();
+  // A config file that does not parse used to be read as {} without a word.
+  warnConfigProblems();
 
   // At startup, not only at exit: the transcripts worth sweeping are the ones
   // a crash left behind, and the exit path that would have removed them is the
@@ -641,12 +645,24 @@ async function main() {
   };
   if (args.resume) {
     const s = findSession(process.cwd(), args.resumeId);
+    const bad = unreadableSessions(process.cwd());
+    if (bad.length) {
+      console.log(c.yellow(`  ${bad.length} saved session file${bad.length === 1 ? '' : 's'} here could not be read and ${bad.length === 1 ? 'was' : 'were'} skipped (${bad[0]})`));
+    }
     if (s) {
       loadSession(s);
     } else {
-      console.log(c.yellow(args.resumeId
-        ? `  no saved session "${args.resumeId}" for this directory — starting fresh`
-        : '  no saved session for this directory — starting fresh'));
+      const there = sessionElsewhere(process.cwd(), args.resumeId);
+      if (there) {
+        console.log(c.yellow(there.folder
+          ? `  session ${there.id} belongs to ${there.folder}, not this folder — to resume it: cd ${JSON.stringify(there.folder)} && kronk-cli --resume ${there.id}`
+          : `  session ${there.id} was saved from a different folder, not this one — cd there and run: kronk-cli --resume ${there.id}`));
+        console.log(c.grey('  starting fresh here'));
+      } else {
+        console.log(c.yellow(args.resumeId
+          ? `  no saved session "${args.resumeId}" for this directory — starting fresh`
+          : '  no saved session for this directory — starting fresh'));
+      }
     }
   }
   // The system prompt is the one record of which mode we are in — /auto rewrites
@@ -686,11 +702,14 @@ async function main() {
 
   // Read once at startup: a preset edited mid-session takes a restart, which
   // keeps the shadowed-name warning honest and the dispatch a plain lookup.
-  const { presets, shadowed } = loadPresets({
+  const { presets, shadowed, invalid } = loadPresets({
     fromConfig: config.presets,
     userDir: userPromptsDir(),
     projectDir: projectPromptsDir(process.cwd()),
   });
+  if (invalid.length) {
+    console.error(c.yellow(`  presets skipped because the name is not lowercase letters, digits and hyphens ([a-z0-9-]+): ${invalid.join(', ')}`));
+  }
   if (shadowed.length) {
     console.error(c.yellow(`  presets ignored because a built-in command has the name: ${
       shadowed.map((n) => `/${n}`).join(', ')}`));
@@ -830,12 +849,20 @@ async function main() {
       // Count what the next request would actually carry, replayed reasoning
       // included — the history holds reasoning that is never sent, and a meter
       // that charged for it would read high for the whole session.
-      const used = await tokenize(config.model, forRequest(messages, isAuto())
-        .map((m) => `${m.reasoning_content ?? ''}${textOf(m.content)}`).join('\n'));
-      console.log(`  ${fmtContext(used, config.contextWindow) || c.grey('unknown')}`);
-      console.log(c.grey(`  window: ${config.contextWindow?.toLocaleString() ?? '?'} tokens`
-        + (config.nativeContext ? ` · model supports up to ${config.nativeContext.toLocaleString()}` : '')));
-      console.log(c.grey(`  messages: ${messages.length}`));
+      // The tool schemas ride along on every request and the images are not in
+      // the text at all, so both are added; otherwise this read far below the
+      // status line, which shows what the server counted.
+      const body = forRequest(messages, isAuto())
+        .map((m) => `${m.reasoning_content ?? ''}${textOf(m.content)}`).join('\n');
+      const defs = [...TOOLS, ...taskTools(0), ...(mcp?.toolDefs() ?? [])];
+      const [messageTokens, toolTokens] = await Promise.all([
+        tokenize(config.model, body), tokenize(config.model, JSON.stringify(defs))]);
+      const images = messages.reduce((n, m) => n + (Array.isArray(m.content)
+        ? m.content.filter((p) => p?.type === 'image_url').length : 0), 0) + pendingImages.length;
+      contextLines({
+        messageTokens, toolTokens, images, measured: config.lastUsed,
+        window: config.contextWindow, native: config.nativeContext, messages: messages.length,
+      }).forEach((l) => console.log(l));
       continue;
     }
     if (input.startsWith('/model ')) {
@@ -854,18 +881,47 @@ async function main() {
         + `${config.maxTokensExplicit ? ' (yours)' : ' (from its profile)'}`));
       continue;
     }
-    if (input.startsWith('/file ')) {
-      const path = input.slice(6).trim();
-      if (isImagePath(path)) {
-        try {
-          const img = await loadImage(path);
-          pendingImages.push(img.part);
-          console.log(c.grey(`  attached ${path} (${img.mime}, ${img.bytes.toLocaleString()} bytes) — goes with your next message`));
-        } catch (e) { console.log(c.red(`  ${e.message}`)); }
+    // Attaching still goes ahead: the user may know better than the model list.
+    const warnIfBlind = async () => {
+      if (await modelSeesImages(config.model) === false) warnNoVisionOnce(config.model, (l) => console.log(c.yellow(l)));
+    };
+    if (input === '/file') { console.log(c.grey('  usage: /file <path> — also works inside a sentence: in this /file "a b.png" what is it?')); continue; }
+    // `/file` anywhere in the line, any number of times. A line that is only
+    // one reference keeps its old meaning: attach, then wait for the question.
+    let inlined = null;
+    let inlineImages = [];
+    const parsed = mentionsFile(input) ? await parseFileRefs(input, resolves) : null;
+    if (parsed && !parsed.refs.length) inlined = parsed.segments.map((s) => s.text).join('');
+    else if (parsed && !isBareRef(parsed)) {
+      const built = await buildFileMessage(parsed, { load: loadImage, read: readFile });
+      built.notes.forEach((n) => console.log(c.grey(`  ${n}`)));
+      if (built.errors) {
+        built.errors.forEach((e) => console.log(c.red(`  ${e}`)));
+        console.log(c.grey('  nothing was sent; fix the path and retry. To type a literal /file, write \\/file'));
         continue;
       }
+      built.contexts.forEach((body) => messages.push({ role: 'user', content: body }));
+      inlined = built.text;
+      inlineImages = built.images;
+      if (inlineImages.length) await warnIfBlind();
+    }
+    if (parsed?.refs.length && isBareRef(parsed)) {
       try {
-        const body = await readFile(path, 'utf8');
+        const { path, note } = await resolveFileArg(parsed.refs[0]);
+        if (note) console.log(c.grey(`  ${note}`));
+        const img = await loadImage(path, { optional: true });
+        if (img) {
+          pendingImages.push(img.part);
+          await warnIfBlind();
+          console.log(c.grey(`  attached ${path} (${img.mime}, ${img.bytes.toLocaleString()} bytes) — goes with your next message`));
+          continue;
+        }
+        const raw = await readFile(path);
+        if (classifyBytes(raw) !== 'text') {
+          console.log(c.red(`  ${path} is binary and not a PNG, JPEG, WebP or GIF; not added`));
+          continue;
+        }
+        const body = raw.toString('utf8');
         messages.push({ role: 'user', content: `Contents of ${path}:\n\n\`\`\`\n${body}\n\`\`\`` });
         console.log(c.grey(`  added ${path} (${body.length} bytes)`));
       } catch (e) { console.log(c.red(`  ${e.message}`)); }
@@ -878,10 +934,10 @@ async function main() {
       continue;
     }
     // After every built-in, so a preset can never take a command's name.
-    const expanded = resolveInvocation(input, presets);
-    if (input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
+    const expanded = inlined ?? resolveInvocation(input, presets);
+    if (inlined === null && input.startsWith('/') && expanded === null) { console.log(c.red(`  unknown command — /help`)); continue; }
 
-    const sent = pendingImages.splice(0);
+    const sent = [...pendingImages.splice(0), ...inlineImages];
     messages.push({ role: 'user', content: buildContent(expanded ?? input, sent) });
     ac = new AbortController();
     term.working();

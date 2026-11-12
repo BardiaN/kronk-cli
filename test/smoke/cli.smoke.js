@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { setup, run, repl } from './harness.js';
+import {
+  setup, run, repl, screenshotDir,
+} from './harness.js';
 
 /**
  * The smoke suite: the real CLI, as a real process, against a real Kronk
@@ -43,6 +45,16 @@ before(async () => { Object.assign(ctx, await setup()); }, { timeout: 600_000 })
  */
 function ready(t) {
   if (ctx.skip) { t.skip(ctx.reason); return false; }
+  return true;
+}
+
+/** Same, for the checks that need an orchestrator that can look at an image. */
+function readyWithVision(t) {
+  if (!ready(t)) return false;
+  if (!ctx.vision) {
+    t.skip('the orchestrator model has no multimodal projector, so it cannot be shown an image');
+    return false;
+  }
   return true;
 }
 
@@ -220,6 +232,60 @@ describe('the interactive REPL, over a real pty', () => {
     for (const needle of ['explore', 'code', 'model:']) {
       assert.ok(out.includes(needle), shows(out, needle));
     }
+  });
+});
+
+describe('showing the model a picture', () => {
+  const ASK = 'what single colour do you see? Answer with one word.';
+  const RED = /\bred\b/i;
+
+  test('/file inside a sentence, a name with a Unicode space typed as a plain one', async (t) => {
+    if (!readyWithVision(t)) return;
+    const { dir, typedName } = screenshotDir();
+    const out = await repl([`in this /file "${typedName}" ${ASK}`, '/exit'],
+      { args: ['--no-context', '--no-warm', '-y'], cwd: dir, after: 60 });
+    assert.ok(out.includes('using '), shows(out, 'the note saying which file was used'));
+    assert.match(out, RED, shows(out, 'red'));
+  });
+
+  test('/file alone attaches and waits, then the next line is the question', async (t) => {
+    if (!readyWithVision(t)) return;
+    const { dir, plain } = screenshotDir();
+    const out = await repl([`/file "${plain}"`, 'What single colour is the picture? Answer with one word.', '/exit'],
+      { args: ['--no-context', '--no-warm', '-y'], cwd: dir, after: 60 });
+    assert.ok(out.includes('attached '), shows(out, 'attached'));
+    assert.match(out, RED, shows(out, 'red'));
+  });
+
+  test('/file refuses a binary file that is not an image, and adds nothing', async (t) => {
+    if (!ready(t)) return;
+    const { dir } = screenshotDir();
+    const out = await repl(['/file blob.dat', '/context', '/exit'],
+      { args: ['--no-context', '--no-warm'], cwd: dir });
+    assert.ok(out.includes('is binary'), shows(out, 'is binary'));
+    assert.ok(!/\badded /.test(out), shows(out, 'no "added" line'));
+  });
+
+  test('a one-shot prompt that mentions /file is still just text', async (t) => {
+    if (!ready(t)) return;
+    const { dir } = screenshotDir();
+    const { code, stdout } = await run([
+      '--no-context', '--no-warm', '-y', '--steps', '2',
+      'Reply with exactly the word PONG. (The text /file "nothing.png" is only a quotation.)',
+    ], { cwd: dir, timeout: 300_000 });
+    assert.equal(code, 0, `exit was ${code}`);
+    assert.ok(!stdout.includes('not found:'), shows(stdout, 'no /file error'));
+  });
+
+  test('the model opens an image itself with read_file', async (t) => {
+    if (!readyWithVision(t)) return;
+    const { dir, plain } = screenshotDir();
+    const { stdout } = await run([
+      '--no-context', '--no-warm', '-y', '--steps', '5',
+      `What single colour is the image in the file '${plain}'? Use read_file. Answer with one word.`,
+    ], { cwd: dir, timeout: 300_000 });
+    assert.ok(stdout.includes(`read ${plain}`), shows(stdout, 'a read_file call on the image'));
+    assert.match(stdout, RED, shows(stdout, 'red'));
   });
 });
 
